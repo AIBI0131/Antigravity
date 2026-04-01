@@ -1,0 +1,48 @@
+# 生成画像・出力
+*_output/
+output/
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.gif
+*.mp4
+*.avi
+*.mov
+
+# モデル・重みファイル
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+*.bin
+*.onnx
+
+# Pythonキャッシュ
+__pycache__/
+*.pyc
+*.pyd
+*.pyo
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Node
+node_modules/
+.next/
+dist/
+build/
+
+# ログ・一時ファイル
+*.log
+*.tmp
+rerun_trigger.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 大容量データ
+knowledge/
+research/
