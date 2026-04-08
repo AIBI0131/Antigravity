@@ -57,6 +57,16 @@ per-stageマスク（段階的マスク拡張）+ 下着フェーズ追加で衣
     2. 顔保護をStage0-1のみに制限: Stage2-4の下半身マスク面積を保全（Image15回帰修正）
     3. fill_collar_gap: jacket_top_yから無条件40px上方延長（jacket≤chin時の襟バンド捕捉）
     4. fill_collar_gap_nofacef: 幅を中央1/3→2/3に拡大（幅広カラー対応、Image2/4）
+  v5AM: 矩形マスク排除 + 襟根本修正 + Image15脱衣回復
+    1. head-guard矩形ゼロ化を削除（face未検出時の矩形ゼロ化はImage4の腕生え原因）
+    2. nofacef force-fill廃止→30px制限延長（Image2右上矩形再生成の直接原因を除去）
+    3. 顔保護y2ステージ別: Stage0-1=fh*0.8(口保護), Stage2-4=fh*0.55(首回りマスク保持)
+    4. STAGE_FILL_MODES [0,1,1,1,1]→[0,0,1,1,1]: Stage1もblurでネクタイ暗色を早期中和
+  v5AL: 口保護強化 + 顔未検出時頭部保護 + 首元強制塗りつぶし + グレー帯縮小
+    1. 顔保護y2: fh*0.55 → fh*0.8（口周りまで保護、Image1）
+    2. face_rects空時: 上着マスク上端より上の中央80%帯をゼロ化（Image4 BACK顔未検出対策）
+    3. nofacef jacket_top<10%: スキップ→上端〜h*15%強制塗りつぶし（Image2 首元帯）
+    4. BOUNDARY_NEUTRALIZE_PX 50→30（Image15 グレー帯軽減）
   v5AK: 帽子/頭保護 + 段階的脱衣 + 色ブリード修正 + 襟残存修正
     1. 帽子マスク除外: dilation後に帽子領域(dilated 11x11 iter=2)を全ステージマスクからbitwise_and除外
     2. 顔保護y上方拡張: y1=fy → fy-fh*0.5（前髪・額保護）
@@ -100,12 +110,14 @@ per-stageマスク（段階的マスク拡張）+ 下着フェーズ追加で衣
     2. legwear を Stage3-4 から再除外: v5x状態に戻す（膝下消失防止）
     3. DENOISING_END 0.77→0.73: Identity loss・膝消失を防ぐ
 """
+import io
 import os
 import sys
 import json
 import time
 import cv2
 import numpy as np
+import requests
 from PIL import Image
 from pathlib import Path
 
@@ -129,7 +141,7 @@ if not SD_URL:
 SD_AUTH = ""
 
 IMG_DIR = r"I:\マイドライブ\Antigravity\workflow-gravity\output\raw\000_Original_プロンプト保管用\005_鳳_咲良_Original\2026-03-20_0613_鳳_咲良_police_uniform,navy_blue_police_jacket,matching_skirt"
-OUT_DIR = os.path.join(os.path.dirname(__file__), "test_fillmode_v5ak_output")
+OUT_DIR = os.path.join(os.path.dirname(__file__), "test_fillmode_v5ao_output")
 
 BASE_PROMPT = "masterpiece, best quality, 1girl, solo, brown hair, bun hair, golden eyes, large breasts"
 NEG_PROMPT = "worst quality, low quality, blurry, extra fingers, bad anatomy, deformed, 2girls, multiple girls, multiple people, group, picture frame, inset, picture-in-picture, split screen, collage, border"
@@ -145,7 +157,7 @@ STAGES_FRONT = [
 ]
 STAGES_BACK = [
     "from behind, back view, slightly disheveled clothes, loose collar, untucked shirt, flustered, blushing, sweat",
-    "from behind, back view, (half-undressed:1.2), (bra strap visible:1.2), (bare shoulders:1.2), (bare skin:1.1), embarrassed",
+    "from behind, back view, (slightly open police jacket:1.2), (jacket slipping off shoulder:1.1), (back collar open:1.1), (disheveled uniform:1.1), flustered, blushing, sweat",
     "from behind, back view, (jacket removed:1.2), (bra strap:1.3), (bare back:1.2), (bare shoulders:1.2), (bare skin:1.2), standing, embarrassed, blushing",
     "from behind, back view, (topless:1.3), (bare back:1.3), (panties only:1.3), (exposed skin:1.3), (no bra:1.2), shy expression, blush",
     "from behind, back view, (completely nude:1.3), (naked:1.3), (bare skin:1.3), (smooth skin:1.3), (bare back:1.3), (bare butt:1.2), shy smile",
@@ -155,7 +167,7 @@ POSE_THRESHOLD = 8.0
 # v5U: reference_only Stage0-2のみ有効、Stage3-4は無効化
 #      重み0.45→0.3、guidance_end0.6→0.4で過剰テクスチャ転写を抑制
 #      大マスクStage3-4でのTRON化・ペンギン化アーティファクトを防止
-STAGE_FILL_MODES = [0, 1, 1, 1, 1]  # Stage 0のみblur(衣服色を消す起点)、Stage 1以降はoriginal(体型維持)
+STAGE_FILL_MODES = [0, 0, 1, 1, 1]  # Stage 0-1をblur（ネクタイ/襟の暗色を早期中和）、Stage 2以降はoriginal
 # inpaint_full_res: 全ステージFalse(Whole picture)
 INPAINT_FULL_RES_PER_STAGE = [False, False, False, False, False]
 DENOISING_START = 0.60
@@ -168,7 +180,7 @@ SCHEDULER = "Karras"
 ADETAILER = False
 MASK_BLUR = 4          # SD APIへのマスクぼかし（境界シャープ維持）
 BLEND_MASK_BLUR = 12   # post-processing blend用Gaussian（境界段差の平滑化、16→12で色ブリード軽減）
-BOUNDARY_NEUTRALIZE_PX = 50  # マスク外境界帯域グレー化幅（色ブリード防止）
+BOUNDARY_NEUTRALIZE_PX = 30  # マスク外境界帯域グレー化幅（50→30: グレー帯目立ち軽減）
 INPAINT_FULL_RES_PADDING = 64
 CONTROLNET_OPENPOSE = True
 CONTROLNET_REFERENCE = False       # v5Y: reference_only完全無効化（TRON系ノイズ根本除去）
@@ -213,9 +225,9 @@ def fill_collar_gap(mask, face_rects, img_shape):
     filled = mask.copy()
     for (fx, fy, fw, fh) in face_rects:
         chin_y = fy + fh  # 顎の下端（face rectの下辺）
-        # 水平範囲: 顔幅の左右150%マージン（セーラー襟・肩回りの幅広カラーに対応）
-        x_start = max(0, fx - int(fw * 1.5))
-        x_end = min(w, fx + int(fw * 2.5))
+        # 水平範囲: 顔幅の左右200%マージン（セーラー襟・肩回りの幅広カラーに対応）
+        x_start = max(0, fx - int(fw * 2.0))
+        x_end = min(w, fx + int(fw * 3.0))
         # 上着マスクの上端（x範囲内の非ゼロ最小y）
         col_region = mask[:, x_start:x_end]
         nonzero_rows = np.where(np.any(col_region > 128, axis=1))[0]
@@ -228,6 +240,12 @@ def fill_collar_gap(mask, face_rects, img_shape):
             gap_top = max(0, chin_y)
             filled[gap_top:jacket_top_y, x_start:x_end] = 255
             print(f"    [collar-gap] face=({fx},{fy},{fw},{fh}) chin_y={chin_y} jacket_top={jacket_top_y} fill={jacket_top_y-gap_top}px")
+        # 襟ラップアラウンド: chin_y付近の横幅をさらに広げて首周り全体をカバー
+        wrap_y1 = max(0, chin_y - 5)
+        wrap_y2 = min(h, chin_y + 10)
+        wrap_x1 = max(0, x_start - 20)
+        wrap_x2 = min(w, x_end + 20)
+        filled[wrap_y1:wrap_y2, wrap_x1:wrap_x2] = 255
         # 無条件上方延長: jacket_top_yから40px上へ（襟バンド捕捉）
         # jacket_top_y <= chin_y の場合もここに到達する（上着が既に顎付近にある場合）
         collar_extend_px = 100
@@ -254,9 +272,14 @@ def fill_collar_gap_nofacef(mask, img_shape, extend_px=80):
     if len(nonzero_rows) == 0:
         return mask
     jacket_top_y = nonzero_rows.min()
-    # jacket_topが画像上端付近(10%以内)のとき延長をスキップ（髪がjacketと誤認の可能性）
+    # jacket_topが画像上端付近(10%以内)の場合: 上着が画面上端まで張り出している
+    # → スキップではなく上端〜h*15%を強制塗りつぶして首元の帯を確実に捕捉
     if jacket_top_y < h * 0.10:
-        print(f"    [collar-gap-nofacef] jacket_top={jacket_top_y} < 10% of h={h}, skip extension")
+        # 矩形force-fillは右上等の無関係な領域を巻き込む原因のため廃止
+        # → jacket_topから最大30px上方のみ延長（小さく的を絞った補完）
+        extend_to_y = max(0, jacket_top_y - 30)
+        filled[extend_to_y:jacket_top_y, cx1:cx2] = 255
+        print(f"    [collar-gap-nofacef] jacket_top={jacket_top_y} < 10%: limited extend {jacket_top_y - extend_to_y}px")
         return filled
     extend_to_y = max(0, jacket_top_y - extend_px)
     filled[extend_to_y:jacket_top_y, cx1:cx2] = 255
@@ -264,7 +287,7 @@ def fill_collar_gap_nofacef(mask, img_shape, extend_px=80):
     return filled
 
 
-def build_stage_masks(cat_masks, face_rects=None):
+def build_stage_masks(cat_masks, face_rects=None, face_hair_raw=None):
     """カテゴリマスクからステージごとの段階的マスクを構築。
 
     Stage 0-2: 上着マスクのみ (3段階で段階的に上着を脱衣)
@@ -297,7 +320,10 @@ def build_stage_masks(cat_masks, face_rects=None):
     if face_rects and img_shape is not None:
         mask_upper = fill_collar_gap(upper, face_rects, img_shape)
     elif img_shape is not None:
-        mask_upper = fill_collar_gap_nofacef(upper, img_shape)  # 顔検出なし時fallback
+        if face_hair_raw is None:
+            mask_upper = fill_collar_gap_nofacef(upper, img_shape)  # 顔検出なし時fallback
+        else:
+            mask_upper = upper if upper is not None else None  # バックポーズ: nofacef上方延長を抑制
     else:
         mask_upper = upper
 
@@ -338,15 +364,29 @@ def build_stage_masks(cat_masks, face_rects=None):
     if face_rects and img_shape is not None:
         h, w = img_shape[:2]
         for (fx, fy, fw, fh) in face_rects:
-            # 顔上端より上50%拡張（前髪・額保護）〜鼻上（fh*55%）まで保護
+            # 顔上端より上50%拡張（前髪・額保護）
             y1 = max(0, fy - int(fh * 0.5))
-            y2 = min(h, fy + int(fh * 0.55))
-            x1 = max(0, fx - fw)          # ±fw幅（目・口領域も確実にカバー）
+            x1 = max(0, fx - fw)               # ±fw幅（目・口領域も確実にカバー）
             x2 = min(w, fx + fw * 2)
             for i in range(len(masks)):
-                # 全ステージで顔保護（y2=fh*55%で顎・首回りはマスクに残す）
                 if masks[i] is not None:
-                    masks[i][y1:y2, x1:x2] = 0
+                    # Stage 0-1: 口まで保護(fh*0.8)、Stage 2-4: 鼻上まで保護(fh*0.55)
+                    # Stage 2-4はfh*0.55にして首回り/ネクタイがマスクに残りSDで除去可能に
+                    if i <= 1:
+                        _y2 = min(h, fy + int(fh * 0.8))
+                    else:
+                        _y2 = min(h, fy + int(fh * 0.55))
+                    masks[i][y1:_y2, x1:x2] = 0
+    # face_rects が空の場合: head-guard矩形ゼロ化は削除済み
+    # → face_hair_raw（顔+髪生ピクセル）でバックポーズの頭部を精密保護
+    if not face_rects and face_hair_raw is not None and img_shape is not None:
+        _fhr_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (21, 21))
+        _fhr_dilated = cv2.dilate(face_hair_raw, _fhr_k, iterations=1)
+        for i in range(len(masks)):
+            if masks[i] is not None:
+                masks[i] = cv2.bitwise_and(masks[i], cv2.bitwise_not(_fhr_dilated))
+        _fhr_pct = 100.0 * np.count_nonzero(_fhr_dilated > 128) / (img_shape[0] * img_shape[1])
+        print(f"  [back-head-protect] face_hair_raw applied ({_fhr_pct:.1f}%, dilate 21x21)")
 
     # 各マスクのカバレッジをログ出力
     for i, m in enumerate(masks):
@@ -362,10 +402,65 @@ def build_stage_masks(cat_masks, face_rects=None):
 TRIGGER_FILE = os.path.join(os.path.dirname(__file__), "rerun_trigger.json")
 
 
+def _florence2_upper_complement(img_rgb: np.ndarray) -> np.ndarray | None:
+    """segmentation-server (port 8471) で上着マスクを補完取得。
+
+    FASHN/SegFormerが全身ポーズ制服で上着を過小検出した場合に、
+    Florence-2+SAM2ルートで補完マスクを取得する。
+    サーバー未起動・エラー時は None を返す（静かにスキップ）。
+    """
+    try:
+        import base64
+        h, w = img_rgb.shape[:2]
+        img_pil = Image.fromarray(img_rgb)
+        buf = io.BytesIO()
+        img_pil.save(buf, format="JPEG", quality=90)
+        buf.seek(0)
+        resp = requests.post(
+            "http://localhost:8471/api/segment",
+            files={"file": ("image.jpg", buf, "image/jpeg")},
+            data={
+                "categories": '["upper_clothing"]',
+                "strategy": "hybrid",
+                "output_format": "masks_json",
+                "postprocess": "true",
+                "skip_unloaded": "true",
+            },
+            timeout=30,
+        )
+        if resp.status_code != 200:
+            print(f"  [florence2-complement] server returned {resp.status_code}")
+            return None
+        data = resp.json()
+        uc = data.get("results", {}).get("upper_clothing", {})
+        mask_b64 = uc.get("mask_b64")
+        if not mask_b64:
+            print(f"  [florence2-complement] upper_clothing not detected")
+            return None
+        mask_bytes = base64.b64decode(mask_b64)
+        mask = np.array(Image.open(io.BytesIO(mask_bytes)).convert("L"))
+        if mask.shape[:2] != (h, w):
+            mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_NEAREST)
+        area_pct = uc.get("area_pct", 100.0 * np.count_nonzero(mask > 128) / (h * w))
+        print(f"  [florence2-complement] upper_clothing {area_pct:.1f}% (source={uc.get('source', '?')})")
+        return mask
+    except Exception as e:
+        print(f"  [florence2-complement] skipped: {e}")
+        return None
+
+
 def _run_batch(out_dir, test_images, all_files,
                generate_progressive_keyframes, segment_clothing_sam, combine_category_masks):
     """テストバッチを1回実行する（モデルロード不要・再利用可能）。"""
     os.makedirs(out_dir, exist_ok=True)
+
+    # pre-flight: bg-removal-server 起動確認（未起動だと上着過小検出が補完されない）
+    try:
+        _bg_resp = requests.get("http://localhost:8470/health", timeout=2)
+        print(f"  [pre-flight] bg-removal-server: OK ({_bg_resp.status_code})")
+    except Exception:
+        print("  [pre-flight] WARNING: bg-removal-server NOT RUNNING!")
+        print("  → cd bg-removal-server && python -m uvicorn server:app --host 127.0.0.1 --port 8470")
 
     for img_num in test_images:
         fname = next((f for f in all_files if int(f.split("-")[0]) == img_num), None)
@@ -425,9 +520,29 @@ def _run_batch(out_dir, test_images, all_files,
                 print(f"  [upper-expand] {_upper_pct:.1f}% → {_expanded_pct:.1f}% (dilate 61px)")
                 cat_masks["上着"] = _expanded
 
+        # Florence-2 上着補完（segmentation-server経由、FASHN/SegFormerと異なるアプローチ）
+        # 上着が 20% 未満のとき、テキスト→bbox→マスクルートで検出漏れを補完
+        _upper_chk = cat_masks.get("上着")
+        if _upper_chk is not None:
+            _uchk_h, _uchk_w = _upper_chk.shape[:2]
+            _uchk_pct = 100.0 * np.count_nonzero(_upper_chk > 128) / (_uchk_h * _uchk_w)
+            if _uchk_pct < 20.0:
+                _f2_mask = _florence2_upper_complement(img_rgb)
+                if _f2_mask is not None:
+                    _merged = cv2.bitwise_or(_upper_chk, _f2_mask)
+                    _merged_pct = 100.0 * np.count_nonzero(_merged > 128) / (_uchk_h * _uchk_w)
+                    print(f"  [florence2-complement] merged upper {_uchk_pct:.1f}% → {_merged_pct:.1f}%")
+                    cat_masks["上着"] = _merged
+
         # per-stageマスク構築
         print("  Building per-stage masks...", flush=True)
-        stage_masks = build_stage_masks(cat_masks, face_rects=filtered_out.get("_face_rects", []))
+        # face_hair_raw はバックポーズのみ渡す（FRONTで顔検出失敗した場合に誤発動防止）
+        _face_hair_raw_for_mask = filtered_out.get("_face_hair_raw") if not is_front else None
+        stage_masks = build_stage_masks(
+            cat_masks,
+            face_rects=filtered_out.get("_face_rects", []),
+            face_hair_raw=_face_hair_raw_for_mask,
+        )
 
         # フォールバック: 上着マスクがNoneの場合、全マスクで代替
         assignments = {"帽子": "除外"}
@@ -436,6 +551,25 @@ def _run_batch(out_dir, test_images, all_files,
             print("  WARNING: No mask at all, skip")
             continue
 
+        # Tier 3: combined_maskが極端に小さい場合、合成上着矩形でフォールバック（Image15対策）
+        # 全セグメンテーションが失敗した場合に中央体躯領域を合成マスクとして注入
+        _cm_h, _cm_w = combined_mask.shape[:2]
+        _cm_pct = 100.0 * np.count_nonzero(combined_mask > 128) / (_cm_h * _cm_w)
+        if _cm_pct < 15.0:
+            print(f"  [tier3-synthetic] combined={_cm_pct:.1f}% < 15% → synthetic upper rect")
+            _syn = np.zeros((_cm_h, _cm_w), dtype=np.uint8)
+            # 画像中央 15-60%高さ × 15-85%幅の矩形
+            _syn[int(_cm_h * 0.15):int(_cm_h * 0.60), int(_cm_w * 0.15):int(_cm_w * 0.85)] = 255
+            # combined_mask の 81px dilate と交差させて有効領域に限定
+            if np.count_nonzero(combined_mask > 128) > 0:
+                _cm_dilated = cv2.dilate(combined_mask,
+                                         cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (81, 81)))
+                _syn = cv2.bitwise_and(_syn, _cm_dilated)
+            _syn_pct = 100.0 * np.count_nonzero(_syn > 128) / (_cm_h * _cm_w)
+            print(f"  [tier3-synthetic] synthetic upper {_syn_pct:.1f}%")
+            if _syn_pct > 0:
+                combined_mask = cv2.bitwise_or(combined_mask, _syn)
+
         # Noneマスクを全体マスクでフォールバック
         for si in range(len(stage_masks)):
             if stage_masks[si] is None:
@@ -443,14 +577,42 @@ def _run_batch(out_dir, test_images, all_files,
                 print(f"    Stage {si} mask: fallback to combined ({100.0 * np.count_nonzero(combined_mask > 128) / combined_mask.size:.1f}%)")
 
         # 上着過小検出フォールバック（Image15対策）:
-        # Stage 0-2 の上着マスクが combined の 40% 未満 → 上着セグメントが失敗している可能性大
+        # Stage 0-2 の上着マスクが combined の 50% 未満 → 上着セグメントが失敗している可能性大
         # → Stage 0-2 を combined_mask で代替して脱衣を確実化
         combined_px = np.count_nonzero(combined_mask > 128)
         upper_px_s0 = np.count_nonzero(stage_masks[0] > 128) if stage_masks[0] is not None else 0
-        if combined_px > 0 and upper_px_s0 / combined_px < 0.40:
-            print(f"  [upper-fallback] upper({upper_px_s0}px) < 40% of combined({combined_px}px) → Stage 0-2 use combined")
+        if combined_px > 0 and upper_px_s0 / combined_px < 0.50:
+            print(f"  [upper-fallback] upper({upper_px_s0}px) < 50% of combined({combined_px}px) → Stage 0-2 use combined")
+            _face_rects = filtered_out.get("_face_rects", [])
+            # バックポーズのみ: face_hair_raw で頭部保護（FRONTで顔未検出時の誤発動を防ぐ）
+            _fhr_not = None
+            if not is_front and not _face_rects:
+                _fhr = filtered_out.get("_face_hair_raw")
+                if _fhr is not None:
+                    _fhr_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (21, 21))
+                    _fhr_not = cv2.bitwise_not(cv2.dilate(_fhr, _fhr_k, iterations=1))
+            # 帽子保護: upper-fallbackでstage_masksを差し替えてもhat-protectを維持
+            _hat_mask = cat_masks.get("帽子")
+            _hat_not = None
+            if _hat_mask is not None:
+                _hat_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11))
+                _hat_not = cv2.bitwise_not(cv2.dilate(_hat_mask, _hat_k, iterations=2))
             for si in range(3):  # Stage 0, 1, 2
-                stage_masks[si] = combined_mask
+                _fb_mask = combined_mask.copy()
+                if _face_rects and img_rgb is not None:
+                    _h, _w = img_rgb.shape[:2]
+                    for (fx, fy, fw, fh) in _face_rects:
+                        _y1 = max(0, fy - int(fh * 0.5))
+                        _x1 = max(0, fx - fw)
+                        _x2 = min(_w, fx + fw * 2)
+                        _y2 = min(_h, fy + int(fh * 0.8 if si <= 1 else fh * 0.55))
+                        _fb_mask[_y1:_y2, _x1:_x2] = 0
+                elif _fhr_not is not None:
+                    _fb_mask = cv2.bitwise_and(_fb_mask, _fhr_not)
+                if _hat_not is not None:
+                    _fb_mask = cv2.bitwise_and(_fb_mask, _hat_not)
+                stage_masks[si] = _fb_mask
+            print(f"  [upper-fallback] face-protect re-applied to fallback masks")
 
         total_pct = 100.0 * np.count_nonzero(combined_mask > 128) / (img_rgb.shape[0] * img_rgb.shape[1])
         print(f"  Combined mask: {total_pct:.1f}% coverage", flush=True)
@@ -501,6 +663,18 @@ def _run_batch(out_dir, test_images, all_files,
         for ki, kf in enumerate(keyframes):
             out_path = os.path.join(img_out_dir, f"stage_{ki:02d}.png")
             Image.fromarray(kf).save(out_path, "PNG")
+
+        # debug: マスク保存（診断用）
+        try:
+            for si, sm in enumerate(stage_masks):
+                if sm is not None:
+                    Image.fromarray(sm).save(os.path.join(img_out_dir, f"debug_mask_s{si}.png"), "PNG")
+            Image.fromarray(combined_mask).save(os.path.join(img_out_dir, "debug_mask_combined.png"), "PNG")
+            _fhr_dbg = filtered_out.get("_face_hair_raw")
+            if _fhr_dbg is not None:
+                Image.fromarray(_fhr_dbg).save(os.path.join(img_out_dir, "debug_exclude_face_hair_raw.png"), "PNG")
+        except Exception as _dbg_e:
+            print(f"  [debug-mask] save failed: {_dbg_e}")
 
         elapsed = time.time() - t0
         print(f"  Done: {len(keyframes)} keyframes in {elapsed:.1f}s", flush=True)

@@ -46,3 +46,37 @@ Thumbs.db
 # 大容量データ
 knowledge/
 research/
+
+# 動的URLファイル（毎回変わるため追跡不要）
+llm_url.json
+llm_url_story.json
+sd_url.json
+vision_url.json
+
+# 個人作業ログ・セッション管理
+standup.md
+handoff/
+plan.md
+.temp_handoff_*.md
+
+# デバッグ・テスト生成残骸
+debug_raw_*.txt
+failed_raw_*.txt
+generated_*.json
+test_final_*.json
+test_safe*.json
+temp-npm/
+
+# テスト結果JSON（再生成可能）
+metamorphose-generator/*_results.json
+
+# ルートに散在したスクラッチスクリプト
+test_api_gravity.py
+test_pillow_grid.py
+test_shlex.py
+
+# 素材・参考資料フォルダ
+テストファイル/
+オノマトペ/
+参考記事/
+ユニコわどセミナー/
