@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { cn } from '$lib/utils.js';
   import Badge from './ui/Badge.svelte';
   import type { EffectMeta } from '$lib/types.js';
@@ -11,6 +12,17 @@
   let { effect, onSelect }: Props = $props();
 
   let hovered = $state(false);
+  // プレースホルダーを初期値にして、実画像が存在する場合のみ差し替える
+  // → 404による「壊れた画像」チラつきを防止
+  let imgSrc = $state('/placeholder-preview.webp');
+
+  onMount(() => {
+    if (effect.previewImage) {
+      const probe = new Image();
+      probe.onload = () => { imgSrc = effect.previewImage as string; };
+      probe.src = effect.previewImage;
+    }
+  });
 
   const totalSizeMB = $derived(
     effect.requiredModels.reduce((s, m) => s + m.sizeMB, 0)
@@ -33,16 +45,13 @@
   <!-- Preview image -->
   <div class="relative aspect-square w-full overflow-hidden bg-zinc-900">
     <img
-      src={effect.previewImage}
+      src={imgSrc}
       alt={effect.name}
       class={cn(
         'h-full w-full object-cover transition-transform duration-300',
         hovered ? 'scale-105' : 'scale-100'
       )}
       loading="lazy"
-      onerror={(e) => {
-        (e.currentTarget as HTMLImageElement).src = '/placeholder-preview.webp';
-      }}
     />
 
     <!-- Weight badge overlay -->
