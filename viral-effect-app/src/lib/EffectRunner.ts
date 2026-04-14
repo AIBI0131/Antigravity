@@ -102,6 +102,11 @@ export class EffectRunner {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(resultBitmap, 0, 0);
     resultBitmap.close();
+
+    // Post-processing pass: heavy effects may apply additional Canvas compositing
+    // (e.g. background-glow adds dark bg + glow halo on top of the Worker's cutout).
+    // bg-removal.apply() is a no-op, so this is safe for all heavy effects.
+    await effect.apply(canvas, params);
   }
 
   // ── Worker lifecycle ──────────────────────────────────────────────────────

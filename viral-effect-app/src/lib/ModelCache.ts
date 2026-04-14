@@ -89,6 +89,9 @@ export class ModelCache {
       accessedAt: Date.now()
     };
     await promisify(t.objectStore(STORE_NAME).put(entry));
+
+    // Auto-evict LRU models if cache exceeds 200 MB to prevent storage bloat on mobile
+    await this.cleanup(200);
   }
 
   async has(modelId: string): Promise<boolean> {
