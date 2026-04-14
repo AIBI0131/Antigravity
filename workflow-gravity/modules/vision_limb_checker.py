@@ -373,7 +373,16 @@ class LimbCheckResult:
 class VisionLimbChecker:
     """
     Vision LLM を使って四肢異常を判定するクラス。
+
+    ハイブリッド AND gate:
+    VLM が IMPOSSIBLE_BEND / BACKWARD_LEG を検出したとき MediaPipe で後段検証し、
+    MediaPipe が OK なら降格（FP 削減）。MediaPipe が NG または失敗なら VLM 判定を維持。
     """
+
+    # MediaPipe AND gate を適用する VLM issue キーワード
+    _MEDIAPIPE_GATE_PATS = re.compile(
+        r"IMPOSSIBLE\s+BEND|BACKWARD\s+LEG", re.IGNORECASE
+    )
 
     def __init__(self, interval: float = 1.0) -> None:
         """
@@ -384,6 +393,10 @@ class VisionLimbChecker:
         """
         self.interval = interval
         self._client, self._model = self._init_client()
+
+        # MediaPipe verifier（遅延ロード）
+        self._mp_checker = None
+        self._mp_load_failed = False
 
     # ──────────────────────────────────────────────────────────────
     # 初期化
@@ -486,7 +499,8 @@ class VisionLimbChecker:
             logger.error(f"API 呼び出し失敗 ({path}): {e}")
             return LimbCheckResult(path=path, ok=True, error=f"api error: {e}")
 
-        return self._parse_response(raw, path)
+        result = self._parse_response(raw, path)
+        return self._apply_gate_verifiers(result, path)
 
     def check_batch(self, image_paths: list[str | Path]) -> list[LimbCheckResult]:
         """複数画像を逐次処理する（インターバルあり）。"""
@@ -523,16 +537,97 @@ class VisionLimbChecker:
             )
 
         merged = list(dict.fromkeys(result1.issues + result2.issues))
-        return LimbCheckResult(
+        merged_result = LimbCheckResult(
             path=path,
             ok=False,
             issues=merged,
             confidence=max(result1.confidence, result2.confidence),
         )
+        return self._apply_gate_verifiers(merged_result, path)
 
     # ──────────────────────────────────────────────────────────────
     # Private helpers
     # ──────────────────────────────────────────────────────────────
+
+    def _apply_gate_verifiers(self, result: "LimbCheckResult", image_path: str) -> "LimbCheckResult":
+        """VLM-NG 結果に対してカテゴリ別 AND gate を適用する。
+
+        現在のゲート:
+          IMPOSSIBLE_BEND / BACKWARD_LEG → MediaPipe 3D 角度検証
+            - MediaPipe=OK → 当該 issue を除去（FP 降格）
+            - MediaPipe=NG または失敗 → VLM 判定を維持（fail-open）
+
+        Returns
+        -------
+        LimbCheckResult
+            ゲート適用後の結果（issue が全削除されれば ok=True に昇格）
+        """
+        if result.ok:
+            return result  # VLM=OK には適用しない
+
+        # IB/BACKWARD_LEG issue を持つかチェック
+        gatable_issues = [iss for iss in result.issues if self._MEDIAPIPE_GATE_PATS.search(iss)]
+        if not gatable_issues:
+            return result  # 対象カテゴリなし → そのまま通す
+
+        # MediaPipe を遅延ロード（失敗済みなら fail-open）
+        if self._mp_load_failed:
+            return result
+
+        if self._mp_checker is None:
+            try:
+                from modules.mediapipe_utils import MediaPipeChecker
+                self._mp_checker = MediaPipeChecker()
+                logger.info("[HybridGate] MediaPipeChecker ロード成功")
+            except Exception as e:
+                logger.warning(f"[HybridGate] MediaPipe ロード失敗 → fail-open: {e}")
+                self._mp_load_failed = True
+                return result
+
+        # 画像を読み込んで MediaPipe に渡す（日本語パス対応: PIL 経由）
+        try:
+            import numpy as np
+            import cv2
+            from PIL import Image as _PIL_Image
+            with _PIL_Image.open(image_path) as _img:
+                _img_rgb = _img.convert("RGB")
+                _img_rgb.load()
+            img_bgr = cv2.cvtColor(np.array(_img_rgb), cv2.COLOR_RGB2BGR)
+            mp_ok, mp_issues, _ = self._mp_checker.check(img_bgr)
+        except Exception as e:
+            logger.warning(f"[HybridGate] MediaPipe 実行失敗 → fail-open ({Path(image_path).name}): {e}")
+            return result
+
+        if mp_ok:
+            # MediaPipe が OK → gatable な issue を除去
+            remaining = [iss for iss in result.issues if not self._MEDIAPIPE_GATE_PATS.search(iss)]
+            if remaining:
+                logger.info(
+                    f"[HybridGate] {Path(image_path).name}: IB/BL issues removed by MediaPipe, "
+                    f"still NG ({len(remaining)} issue remaining)"
+                )
+                return LimbCheckResult(
+                    path=result.path,
+                    ok=False,
+                    issues=remaining,
+                    confidence=result.confidence,
+                )
+            else:
+                logger.info(
+                    f"[HybridGate] {Path(image_path).name}: VLM NG but MediaPipe OK → 降格 OK"
+                )
+                return LimbCheckResult(
+                    path=result.path,
+                    ok=True,
+                    issues=[],
+                    confidence=result.confidence,
+                )
+        else:
+            # MediaPipe も NG → VLM 判定を維持
+            logger.debug(
+                f"[HybridGate] {Path(image_path).name}: MediaPipe confirms NG {mp_issues}"
+            )
+            return result
 
     @staticmethod
     def _encode_image(path: str) -> str:
