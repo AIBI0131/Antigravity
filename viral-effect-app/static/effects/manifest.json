@@ -1,0 +1,141 @@
+{
+  "version": "1",
+  "effects": [
+    {
+      "id": "color-pop",
+      "name": "カラーポップ",
+      "description": "指定した色だけ残してあとは白黒に。SNSでよく見るあの加工。",
+      "weight": "light",
+      "enabled": true,
+      "requiredModels": [],
+      "params": [
+        {
+          "id": "targetHue",
+          "type": "range",
+          "label": "残す色相 (0=赤 120=緑 240=青)",
+          "default": 0,
+          "min": 0,
+          "max": 360,
+          "step": 1
+        },
+        {
+          "id": "tolerance",
+          "type": "range",
+          "label": "許容範囲",
+          "default": 30,
+          "min": 5,
+          "max": 90,
+          "step": 1
+        }
+      ],
+      "previewImage": "/effects/color-pop/preview.webp",
+      "addedAt": "2026-04-13"
+    },
+    {
+      "id": "neon-outline",
+      "name": "ネオン輪郭",
+      "description": "エッジを光るネオンカラーで際立たせる。ダークな雰囲気に。",
+      "weight": "light",
+      "enabled": true,
+      "requiredModels": [],
+      "params": [
+        {
+          "id": "outlineColor",
+          "type": "color",
+          "label": "ネオンカラー",
+          "default": "#00ffff"
+        },
+        {
+          "id": "outlineWidth",
+          "type": "range",
+          "label": "輪郭の太さ",
+          "default": 1,
+          "min": 1,
+          "max": 4,
+          "step": 1
+        },
+        {
+          "id": "bgDarkness",
+          "type": "range",
+          "label": "背景の暗さ",
+          "default": 0.7,
+          "min": 0,
+          "max": 1,
+          "step": 0.05
+        }
+      ],
+      "previewImage": "/effects/neon-outline/preview.webp",
+      "addedAt": "2026-04-13"
+    },
+    {
+      "id": "background-glow",
+      "name": "背景グロー",
+      "description": "AIが人物を切り抜き、暗い背景に幻想的な光のオーラを加える。",
+      "weight": "heavy",
+      "enabled": false,
+      "requiredModels": [
+        {
+          "id": "birefnet-lite",
+          "source": "onnx-community/BiRefNet_lite",
+          "sizeMB": 45
+        }
+      ],
+      "params": [
+        {
+          "id": "glowColor",
+          "type": "color",
+          "label": "グローカラー",
+          "default": "#ffffff"
+        },
+        {
+          "id": "glowIntensity",
+          "type": "range",
+          "label": "グロー強度",
+          "default": 0.8,
+          "min": 0,
+          "max": 1,
+          "step": 0.05
+        },
+        {
+          "id": "glowRadius",
+          "type": "range",
+          "label": "グロー半径 (px)",
+          "default": 30,
+          "min": 5,
+          "max": 80,
+          "step": 5
+        }
+      ],
+      "previewImage": "/effects/background-glow/preview.webp",
+      "addedAt": "2026-04-13"
+    },
+    {
+      "id": "bg-removal",
+      "name": "背景除去",
+      "description": "AIが人物・物体を切り抜き、背景を透明にします。",
+      "weight": "heavy",
+      "enabled": false,
+      "requiredModels": [
+        {
+          "id": "birefnet-lite",
+          "source": "onnx-community/BiRefNet_lite",
+          "sizeMB": 45
+        }
+      ],
+      "params": [
+        {
+          "id": "maskMode",
+          "type": "select",
+          "label": "マスクモード",
+          "default": "cutout",
+          "options": [
+            { "value": "cutout", "label": "切り抜き" },
+            { "value": "highlight", "label": "ハイライト" }
+          ]
+        }
+      ],
+      "previewImage": "/effects/bg-removal/preview.webp",
+      "addedAt": "2026-04-13"
+    }
+  ]
+}

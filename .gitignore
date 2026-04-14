@@ -10,6 +10,11 @@ output/
 *.avi
 *.mov
 
+# viral-effect-app の静的アセットは除外しない
+!viral-effect-app/static/**
+!viral-effect-app/tests/fixtures/**
+!viral-effect-app/effects/**/preview.webp
+
 # モデル・重みファイル
 *.safetensors
 *.ckpt

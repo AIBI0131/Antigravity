@@ -1,0 +1,33 @@
+{
+  "version": "1",
+  "effects": [
+    {
+      "id": "bg-removal",
+      "name": "背景除去",
+      "description": "AIが人物・物体を切り抜き、背景を透明にします。",
+      "weight": "heavy",
+      "enabled": false,
+      "requiredModels": [
+        {
+          "id": "birefnet-lite",
+          "source": "onnx-community/BiRefNet_lite",
+          "sizeMB": 45
+        }
+      ],
+      "params": [
+        {
+          "id": "maskMode",
+          "type": "select",
+          "label": "マスクモード",
+          "default": "cutout",
+          "options": [
+            { "value": "cutout", "label": "切り抜き" },
+            { "value": "highlight", "label": "ハイライト" }
+          ]
+        }
+      ],
+      "previewImage": "/effects/bg-removal/preview.webp",
+      "addedAt": "2026-04-13"
+    }
+  ]
+}
