@@ -5,9 +5,10 @@
   interface Props {
     progress: DownloadProgress | null;
     onCancel: () => void;
+    effectName?: string;
   }
 
-  let { progress, onCancel }: Props = $props();
+  let { progress, onCancel, effectName }: Props = $props();
 
   const percent = $derived(progress?.percent ?? 0);
   const label = $derived(progress?.label ?? 'AIモデルを準備中...');
@@ -23,7 +24,9 @@
   </div>
 
   <div class="flex flex-col gap-1">
-    <h2 class="text-base font-semibold text-zinc-100">AIモデルをダウンロード中</h2>
+    <h2 class="text-base font-semibold text-zinc-100">
+      {effectName ? `「${effectName}」を処理中...` : 'AIモデルをダウンロード中'}
+    </h2>
     <p class="max-w-xs text-xs text-zinc-400 leading-relaxed">
       初回のみ必要です。次回からは即座に適用されます。
     </p>
@@ -41,7 +44,7 @@
 
   <button
     onclick={onCancel}
-    class="rounded-lg px-4 py-2 text-xs font-medium text-zinc-500 transition hover:bg-zinc-700/50 hover:text-zinc-300"
+    class="min-h-[44px] rounded-lg px-5 py-2 text-xs font-medium text-zinc-500 transition hover:bg-zinc-700/50 hover:text-zinc-300"
   >
     キャンセル
   </button>

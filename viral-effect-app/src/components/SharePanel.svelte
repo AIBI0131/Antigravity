@@ -38,8 +38,8 @@
 
 <section class="flex flex-col gap-5">
   <div class="text-center">
-    <h2 class="text-base font-semibold text-zinc-100">完成！</h2>
-    <p class="text-xs text-zinc-400">シェアまたは保存しよう</p>
+    <h2 class="text-xl font-bold text-zinc-100">完成！</h2>
+    <p class="text-sm text-zinc-400">シェアまたは保存しよう</p>
   </div>
 
   <!-- Result / before preview -->

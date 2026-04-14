@@ -81,7 +81,7 @@
   <div class="flex items-center gap-3">
     <button
       onclick={onBack}
-      class="rounded-lg p-1.5 text-zinc-400 transition hover:bg-zinc-700/60 hover:text-zinc-100"
+      class="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg text-zinc-400 transition hover:bg-zinc-700/60 hover:text-zinc-100"
       aria-label="戻る"
     >
       ←

@@ -154,6 +154,7 @@
     <ModelDownloader
       progress={$downloadProgress}
       onCancel={onCancel}
+      effectName={$selectedEffect?.name}
     />
 
   {:else if $appStep === 'result' && $resultDataUrl && $selectedEffect}

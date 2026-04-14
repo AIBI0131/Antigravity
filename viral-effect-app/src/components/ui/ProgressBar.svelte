@@ -18,7 +18,7 @@
       <span>{clamped}%</span>
     </div>
   {/if}
-  <div class="h-2 w-full overflow-hidden rounded-full bg-zinc-700">
+  <div class="h-3 w-full overflow-hidden rounded-full bg-zinc-700">
     <div
       class="h-full rounded-full bg-violet-500 transition-all duration-300 ease-out"
       style="width: {clamped}%"
