@@ -499,8 +499,7 @@ class VisionLimbChecker:
             logger.error(f"API 呼び出し失敗 ({path}): {e}")
             return LimbCheckResult(path=path, ok=True, error=f"api error: {e}")
 
-        result = self._parse_response(raw, path)
-        return self._apply_gate_verifiers(result, path)
+        return self._parse_response(raw, path)
 
     def check_batch(self, image_paths: list[str | Path]) -> list[LimbCheckResult]:
         """複数画像を逐次処理する（インターバルあり）。"""
@@ -537,13 +536,12 @@ class VisionLimbChecker:
             )
 
         merged = list(dict.fromkeys(result1.issues + result2.issues))
-        merged_result = LimbCheckResult(
+        return LimbCheckResult(
             path=path,
             ok=False,
             issues=merged,
             confidence=max(result1.confidence, result2.confidence),
         )
-        return self._apply_gate_verifiers(merged_result, path)
 
     # ──────────────────────────────────────────────────────────────
     # Private helpers
