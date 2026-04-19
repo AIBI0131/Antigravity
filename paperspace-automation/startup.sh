@@ -38,8 +38,8 @@ fi
 if [ ! -f "$READY" ]; then
     echo "=== Setup: venv 構築 (初回 10〜15分) ==="
     apt-get update -qq
-    apt-get install -y -qq python3.10 libpython3.10-dev build-essential ffmpeg
-    python3.10 -m venv "$VENV"
+    apt-get install -y -qq python3.10 python3.10-venv libpython3.10-dev build-essential ffmpeg
+    python3.10 -m venv "$VENV" || { echo "FATAL: venv 作成失敗"; exit 1; }
     "$VENV/bin/pip" install -U pip setuptools==69.5.1 wheel
     "$VENV/bin/pip" install \
         torch==2.1.2 torchvision==0.16.2 torchaudio==2.1.2 \
