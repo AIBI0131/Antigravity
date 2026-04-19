@@ -63,55 +63,41 @@ def _try_endpoint(ep: dict, path: str, method: str = "GET", **kw):
     return r.json()
 
 
-def paperspace(path: str, method: str = "GET", **kw):
+def _discover_endpoint():
+    """リストエンドポイントでどの API サーバーが使えるかを発見する。"""
     global _active_endpoint
-    if _active_endpoint:
-        return _try_endpoint(_active_endpoint, path, method, **kw)
-
     last_err = None
     for ep in ENDPOINTS:
         try:
-            result = _try_endpoint(ep, f"/notebooks/{NOTEBOOK_ID}", "GET")
+            _try_endpoint(ep, "/notebooks", "GET")
             _active_endpoint = ep
             print(f"  API endpoint: {ep['base']}")
-            if method == "GET" and path == f"/notebooks/{NOTEBOOK_ID}":
-                return result
-            return _try_endpoint(ep, path, method, **kw)
+            return
         except Exception as e:
             print(f"  endpoint {ep['base']} 失敗: {e}")
             last_err = e
-            continue
+    raise RuntimeError(f"Paperspace API 疎通不可: {last_err}")
 
-    raise RuntimeError(f"Paperspace API 疎通不可 (両エンドポイント失敗): {last_err}")
+
+def paperspace(path: str, method: str = "GET", **kw):
+    global _active_endpoint
+    if not _active_endpoint:
+        _discover_endpoint()
+    return _try_endpoint(_active_endpoint, path, method, **kw)
 
 
 def resolve_notebook_id() -> str:
-    """notebookRepoId から現在の API id を動的に解決する。"""
+    """notebookRepoId から現在の API id をリスト検索で解決する。"""
     global NOTEBOOK_ID
-    # まず直接アクセスを試みる
-    try:
-        paperspace(f"/notebooks/{NOTEBOOK_REPO_ID}")
-        NOTEBOOK_ID = NOTEBOOK_REPO_ID
-        return NOTEBOOK_ID
-    except Exception:
-        pass
-    # リストから notebookRepoId or id が一致するものを探す
-    try:
-        data = paperspace("/notebooks")
-        items = data if isinstance(data, list) else data.get("items", data.get("notebooks", []))
-        safe_print = [
-            {k: v for k, v in nb.items()
-             if k in {"id", "name", "state", "machineType", "projectId", "notebookRepoId"}}
-            for nb in items
-        ]
-        print("  notebook list:", safe_print)
-        for nb in items:
-            if nb.get("notebookRepoId") == NOTEBOOK_REPO_ID or nb.get("id") == NOTEBOOK_REPO_ID:
-                NOTEBOOK_ID = nb["id"]
-                print(f"  → 解決: notebookRepoId={NOTEBOOK_REPO_ID} → id={NOTEBOOK_ID}")
-                return NOTEBOOK_ID
-    except Exception as e:
-        print(f"  WARN: notebook list 失敗: {e}")
+    data = paperspace("/notebooks")
+    items = data if isinstance(data, list) else data.get("items", data.get("notebooks", []))
+    safe_keys = {"id", "name", "state", "machineType", "projectId", "notebookRepoId"}
+    print("  notebooks:", [{k: v for k, v in nb.items() if k in safe_keys} for nb in items])
+    for nb in items:
+        if nb.get("notebookRepoId") == NOTEBOOK_REPO_ID or nb.get("id") == NOTEBOOK_REPO_ID:
+            NOTEBOOK_ID = nb["id"]
+            print(f"  → 解決: repoId={NOTEBOOK_REPO_ID} → id={NOTEBOOK_ID}, state={nb.get('state')}")
+            return NOTEBOOK_ID
     raise RuntimeError(f"Notebook が見つかりません (notebookRepoId={NOTEBOOK_REPO_ID})")
 
 
