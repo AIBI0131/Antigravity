@@ -24,7 +24,10 @@ import requests
 
 DRY_RUN = os.environ.get("DRY_RUN", "0") == "1"
 API_KEY = os.environ["PAPERSPACE_API_KEY"]
-NOTEBOOK_ID = os.environ["PAPERSPACE_NOTEBOOK_ID"]
+# PAPERSPACE_NOTEBOOK_ID には Console URL の ID (notebookRepoId) を設定する
+# 例: https://console.paperspace.com/xxx/notebook/rdlpoamf83uqqub → rdlpoamf83uqqub
+NOTEBOOK_REPO_ID = os.environ["PAPERSPACE_NOTEBOOK_ID"]
+NOTEBOOK_ID = NOTEBOOK_REPO_ID  # 初期値（直接アクセス用フォールバック）
 
 STALE_THRESHOLD = 5.9 * 3600  # 5時間54分を超えたら stale とみなす
 
@@ -82,9 +85,39 @@ def paperspace(path: str, method: str = "GET", **kw):
     raise RuntimeError(f"Paperspace API 疎通不可 (両エンドポイント失敗): {last_err}")
 
 
+def resolve_notebook_id() -> str:
+    """notebookRepoId から現在の API id を動的に解決する。"""
+    global NOTEBOOK_ID
+    # まず直接アクセスを試みる
+    try:
+        paperspace(f"/notebooks/{NOTEBOOK_REPO_ID}")
+        NOTEBOOK_ID = NOTEBOOK_REPO_ID
+        return NOTEBOOK_ID
+    except Exception:
+        pass
+    # リストから notebookRepoId or id が一致するものを探す
+    try:
+        data = paperspace("/notebooks")
+        items = data if isinstance(data, list) else data.get("items", data.get("notebooks", []))
+        safe_print = [
+            {k: v for k, v in nb.items()
+             if k in {"id", "name", "state", "machineType", "projectId", "notebookRepoId"}}
+            for nb in items
+        ]
+        print("  notebook list:", safe_print)
+        for nb in items:
+            if nb.get("notebookRepoId") == NOTEBOOK_REPO_ID or nb.get("id") == NOTEBOOK_REPO_ID:
+                NOTEBOOK_ID = nb["id"]
+                print(f"  → 解決: notebookRepoId={NOTEBOOK_REPO_ID} → id={NOTEBOOK_ID}")
+                return NOTEBOOK_ID
+    except Exception as e:
+        print(f"  WARN: notebook list 失敗: {e}")
+    raise RuntimeError(f"Notebook が見つかりません (notebookRepoId={NOTEBOOK_REPO_ID})")
+
+
 def notebook_info() -> dict:
     data = paperspace(f"/notebooks/{NOTEBOOK_ID}")
-    safe_keys = {"state", "status", "machineType", "clusterId", "projectId", "name", "id"}
+    safe_keys = {"state", "status", "machineType", "clusterId", "projectId", "name", "id", "notebookRepoId"}
     print("  notebook fields:", {k: v for k, v in data.items() if k in safe_keys})
     return data
 
@@ -204,6 +237,9 @@ def wait_until_stopped(max_wait: int = 300):
 
 def main():
     print(f"=== Paperspace Watchdog (DRY_RUN={DRY_RUN}) ===")
+
+    # ── notebook ID を動的解決（repoId → 現在の API id）──────────────────────
+    resolve_notebook_id()
 
     # ── state チェック ───────────────────────────────────────────────────────
     state = notebook_state()
