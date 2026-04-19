@@ -10,16 +10,20 @@ WEBUI=/notebooks/stable-diffusion-webui
 CF=/notebooks/cloudflared
 READY="$VENV/.READY"
 
-# ── 1. rclone.conf 必須チェック ───────────────────────────────────────────────
+# ── 1. rclone.conf チェック（任意・なくても動作する） ────────────────────────
 export RCLONE_CONFIG=/notebooks/rclone.conf
-if [ ! -f "$RCLONE_CONFIG" ]; then
-    echo "FATAL: $RCLONE_CONFIG が見つかりません。" >&2
-    echo "  初回配置: paperspace-automation/README.md の「初回セットアップ」を参照。" >&2
-    exit 1
+RCLONE_AVAILABLE=false
+if [ -f "$RCLONE_CONFIG" ] && command -v rclone &>/dev/null; then
+    RCLONE_AVAILABLE=true
+    echo "✅ rclone 利用可能"
+else
+    echo "INFO: rclone 未設定 — Drive 同期をスキップ（WebUI は起動します）"
 fi
 
 # ── 2. .env（Notion トークン等）を Drive から取得して読み込み ─────────────────
-rclone copyto gdrive:Antigravity/paperspace.env /notebooks/.env 2>/dev/null || true
+if [ "$RCLONE_AVAILABLE" = true ]; then
+    rclone copyto gdrive:Antigravity/paperspace.env /notebooks/.env 2>/dev/null || true
+fi
 if [ -f /notebooks/.env ]; then
     set -a
     # shellcheck source=/dev/null
@@ -27,7 +31,7 @@ if [ -f /notebooks/.env ]; then
     set +a
     echo "✅ .env 読み込み完了"
 else
-    echo "WARN: paperspace.env が Drive 上にありません（Notion ワーカーは起動しません）"
+    echo "INFO: .env なし（Notion ワーカーは起動しません）"
 fi
 
 # ── 3. セットアップ（.READY なければ初回構築・冪等） ─────────────────────────
@@ -90,9 +94,11 @@ nohup bash -c "
             TS=\$(date +%s)
             echo \"{\\\"url\\\":\\\"\$URL\\\",\\\"timestamp\\\":\$TS,\\\"source\\\":\\\"paperspace\\\"}\" \
                 > /storage/sd_url.json
-            rclone copyto /storage/sd_url.json gdrive:Antigravity/sd_url.json \
-                && echo \"✅ sd_url.json → Drive 同期: \$URL\" \
-                || echo \"WARN: rclone 同期失敗\"
+            if [ \"$RCLONE_AVAILABLE\" = true ]; then
+                rclone copyto /storage/sd_url.json gdrive:Antigravity/sd_url.json \
+                    && echo \"✅ sd_url.json → Drive 同期: \$URL\" \
+                    || echo \"WARN: rclone 同期失敗\"
+            fi
             break
         fi
     done
