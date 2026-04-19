@@ -53,6 +53,8 @@ _active_endpoint = None
 def _try_endpoint(ep: dict, path: str, method: str = "GET", **kw):
     url = ep["base"] + path
     headers = {ep["header_key"]: ep["header_val"], "Content-Type": "application/json"}
+    if method == "POST" and "json" not in kw and "data" not in kw:
+        kw["json"] = {}
     r = requests.request(method, url, headers=headers, timeout=30, **kw)
     r.raise_for_status()
     return r.json()
@@ -156,8 +158,18 @@ def main():
         if DRY_RUN:
             print("  [DRY_RUN] POST /notebooks/{id}/start をスキップ")
         else:
-            paperspace(f"/notebooks/{NOTEBOOK_ID}/start", method="POST")
-            print("  start リクエスト送信完了。")
+            try:
+                paperspace(f"/notebooks/{NOTEBOOK_ID}/start", method="POST")
+                print("  start リクエスト送信完了。")
+            except Exception as e:
+                print(f"  WARN: /start 失敗 ({e})。/notebooks への POST を試みます。")
+                try:
+                    paperspace("/notebooks", method="POST",
+                               json={"notebookId": NOTEBOOK_ID})
+                    print("  POST /notebooks 送信完了。")
+                except Exception as e2:
+                    print(f"  ERROR: 再起動失敗: {e2}")
+                    sys.exit(1)
         sys.exit(0)
 
     # ── running だが URL が古い場合は stop → start ───────────────────────────
