@@ -130,9 +130,13 @@ def read_sd_url_age() -> float:
 # ---------------------------------------------------------------------------
 
 def _start_notebook():
+    import subprocess
     errors = []
 
-    # 手段1: /start エンドポイント
+    nb = notebook_info()
+    project_id = nb.get("projectId", "")
+
+    # 手段1: /start エンドポイント (v1 直接)
     try:
         paperspace(f"/notebooks/{NOTEBOOK_ID}/start", method="POST")
         print("  ✓ POST /start 成功")
@@ -140,30 +144,40 @@ def _start_notebook():
     except Exception as e:
         errors.append(f"/start: {e}")
 
-    # 手段2: gradient Python SDK
+    # 手段2: project スコープ付き /start
+    if project_id:
+        try:
+            paperspace(f"/projects/{project_id}/notebooks/{NOTEBOOK_ID}/start", method="POST")
+            print(f"  ✓ POST /projects/{project_id}/start 成功")
+            return
+        except Exception as e:
+            errors.append(f"/projects/.../start: {e}")
+
+    # 手段3: PATCH で state を Running に変更
     try:
-        from gradient import NotebooksClient
-        client = NotebooksClient(api_key=API_KEY)
-        client.start(id=NOTEBOOK_ID)
-        print("  ✓ gradient SDK start 成功")
+        paperspace(f"/notebooks/{NOTEBOOK_ID}", method="PATCH",
+                   json={"state": "Running"})
+        print("  ✓ PATCH state=Running 成功")
         return
     except Exception as e:
-        errors.append(f"gradient SDK: {e}")
+        errors.append(f"PATCH state: {e}")
 
-    # 手段3: POST /notebooks に machineType を付けて試みる
+    # 手段4: gradient CLI (subprocess)
     try:
-        nb = notebook_info()
-        machine_type = nb.get("machineType", "Free-GPU")
-        paperspace("/notebooks", method="POST", json={
-            "notebookId": NOTEBOOK_ID,
-            "machineType": machine_type,
-        })
-        print("  ✓ POST /notebooks (machineType) 成功")
-        return
+        result = subprocess.run(
+            ["gradient", "notebooks", "start", "--id", NOTEBOOK_ID],
+            capture_output=True, text=True,
+            env={**os.environ, "PAPERSPACE_API_KEY": API_KEY},
+            timeout=60,
+        )
+        if result.returncode == 0:
+            print(f"  ✓ gradient CLI 成功: {result.stdout.strip()}")
+            return
+        errors.append(f"gradient CLI (rc={result.returncode}): {result.stderr.strip()}")
     except Exception as e:
-        errors.append(f"POST /notebooks: {e}")
+        errors.append(f"gradient CLI: {e}")
 
-    print(f"  ERROR: 全手段失敗: {errors}")
+    print(f"  WARN: 全手段失敗。手動での再起動が必要です: {errors}")
     sys.exit(1)
 
 
