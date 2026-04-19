@@ -1,0 +1,32 @@
+name: Paperspace Watchdog
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: paperspace-watchdog
+  cancel-in-progress: false
+
+jobs:
+  check-and-restart:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests google-api-python-client google-auth
+
+      - name: Run watchdog
+        env:
+          PAPERSPACE_API_KEY:      ${{ secrets.PAPERSPACE_API_KEY }}
+          PAPERSPACE_NOTEBOOK_ID:  ${{ secrets.PAPERSPACE_NOTEBOOK_ID }}
+          GDRIVE_SA_JSON:          ${{ secrets.GDRIVE_SA_JSON }}
+          GDRIVE_SD_URL_FILE_ID:   ${{ secrets.GDRIVE_SD_URL_FILE_ID }}
+          DRY_RUN:                 ${{ vars.WATCHDOG_DRY_RUN }}
+        run: python .github/scripts/paperspace_watchdog.py
