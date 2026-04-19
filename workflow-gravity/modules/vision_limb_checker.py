@@ -152,7 +152,7 @@ JSON only (no other text):
 # Pass 1 フィルター（全カテゴリ対象）
 _FILTER_PATS_PASS1 = [
     re.compile(r"\barm\b.{0,40}\b(absent|missing)\b", re.IGNORECASE),  # arm absent — NSFW で腕が体の間に隠れる
-    # re.compile(r"\breversed\s+male\b", re.IGNORECASE),                  # REVERSED MALE — Phase 2 以降は無効化
+    re.compile(r"\breversed\s+male\b", re.IGNORECASE),                   # REVERSED MALE — NGimage TP に存在しない、全除去
     re.compile(r"\b(?:BALD|BOLD)\s+MALE\b", re.IGNORECASE),  # BALD/BOLD MALE — NGimage TP にこのカテゴリなし、全除去
     re.compile(r"\bBACKGROUND\s+MALE\b", re.IGNORECASE),  # BACKGROUND MALE — NGimage TP にこのカテゴリなし、全除去
     re.compile(r"BALD.{0,80}\b(white|silver|gray|grey|light|blonde)\b.{0,40}hair", re.IGNORECASE | re.DOTALL),  # BALD MALE — 白/銀髪を禿げと誤検知した場合のみ除去（旧フィルター、新フィルターが優先）
@@ -583,12 +583,15 @@ class VisionLimbChecker:
             return result1
 
         if result1.ok and result2.ok:
-            return LimbCheckResult(
+            early_ok = LimbCheckResult(
                 path=path,
                 ok=True,
                 issues=[],
                 confidence=min(result1.confidence, result2.confidence),
             )
+            if self.use_nudenet_booster:
+                early_ok = self._boost_nudenet(early_ok, path)
+            return early_ok
 
         merged = list(dict.fromkeys(result1.issues + result2.issues))
         final = LimbCheckResult(
@@ -660,9 +663,14 @@ class VisionLimbChecker:
                 _img_rgb = _img.convert("RGB")
                 _img_rgb.load()
             img_bgr = cv2.cvtColor(np.array(_img_rgb), cv2.COLOR_RGB2BGR)
-            mp_ok, mp_issues, _ = self._mp_checker.check(img_bgr)
+            mp_ok, mp_issues, mp_meta = self._mp_checker.check(img_bgr)
         except Exception as e:
             logger.warning(f"[HybridGate] MediaPipe 実行失敗 → fail-open ({Path(image_path).name}): {e}")
+            return result
+
+        n_poses = mp_meta.get("mediapipe_poses", 0)
+        if n_poses == 0:
+            logger.info(f"[HybridGate] {Path(image_path).name}: MediaPipe 0 persons → fail-open (NG 維持)")
             return result
 
         if mp_ok:
@@ -779,7 +787,7 @@ class VisionLimbChecker:
         for d in detections:
             label = d.get("class", d.get("label", ""))
             score = d.get("score", 0.0)
-            if label != "MALE_GENITALIA_EXPOSED" or score < 0.5:
+            if label != "MALE_GENITALIA_EXPOSED" or score < 0.35:
                 continue
             box = d.get("box", [])
             if len(box) >= 4:
@@ -788,12 +796,13 @@ class VisionLimbChecker:
                     valid.append(d)
 
         if not valid:
+            logger.info(f"[NudeBoost] {Path(image_path).name}: no MALE_GENITALIA_EXPOSED (conf≥0.35) → skip")
             return result
 
         # DWPose で人体数チェック（2体以上 = 男性が存在 → 通常の性交 → 昇格しない）
         person_count = self._count_persons_dwpose(image_path)
         if person_count != 1:
-            logger.debug(f"[NudeBoost] {Path(image_path).name}: {person_count} persons → skip")
+            logger.info(f"[NudeBoost] {Path(image_path).name}: {person_count} persons detected → skip (not solo)")
             return result
 
         best = max(valid, key=lambda d: d.get("score", 0))
