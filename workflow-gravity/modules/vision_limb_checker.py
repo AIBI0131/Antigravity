@@ -139,7 +139,6 @@ ACCEPTABLE (return ok=true for ALL of these):
 - Any scene where defects are not clearly visible
 - Penetrating/top character in sex scenes (may be male despite long hair)
 - When in doubt, return ok=true
-
 JSON only (no other text):
 {"ok": true, "issues": [], "confidence": 0.9}
 {"ok": false, "issues": ["BODY FUSION: two characters share the same skin surface"], "confidence": 0.9}
@@ -361,6 +360,14 @@ _BODY_FUSION_PRESERVE_PATS = [
 ]
 
 
+# ──────────────────────────────────────────────────────────────
+# 推論パラメータ（モデル変更時はここだけ編集）
+# ──────────────────────────────────────────────────────────────
+INFER_PASS1 = dict(temperature=0.2, max_tokens=1024, enable_thinking=False)
+INFER_PASS2 = dict(temperature=0.2, max_tokens=1536, enable_thinking=True)
+INFER_RETRY = dict(temperature=0.0, max_tokens=256,  enable_thinking=False)
+
+
 @dataclass
 class LimbCheckResult:
     path: str
@@ -379,22 +386,44 @@ class VisionLimbChecker:
     MediaPipe が OK なら降格（FP 削減）。MediaPipe が NG または失敗なら VLM 判定を維持。
     """
 
-    # MediaPipe AND gate を適用する VLM issue キーワード
+    # Phase 1: MediaPipe AND gate パターン
     _MEDIAPIPE_GATE_PATS = re.compile(
         r"IMPOSSIBLE\s+BEND|BACKWARD\s+LEG", re.IGNORECASE
     )
+    # Phase 3: DWPose AND gate パターン
+    _BODY_FUSION_GATE_PATS = re.compile(r"BODY\s+FUSION", re.IGNORECASE)
 
-    def __init__(self, interval: float = 1.0) -> None:
+    # DWPose / NudeNet クラスレベルシングルトン（VRAM 節約のため複数インスタンス共有）
+    _dwpose_checker = None
+    _dwpose_load_failed = False
+    _nudenet_detector = None
+    _nudenet_load_failed = False
+
+    def __init__(
+        self,
+        interval: float = 1.0,
+        use_cv_gate: bool = False,
+        use_nudenet_booster: bool = False,
+    ) -> None:
         """
         Parameters
         ----------
         interval : float
             API 呼び出し間の待機秒数（レート制限対策）
+        use_cv_gate : bool
+            True のとき VLM-NG 結果に CV AND gate を適用する（FP 削減）。
+            環境変数 USE_CV_GATE=1 でも有効化できる。
+        use_nudenet_booster : bool
+            True のとき VLM-OK 結果に NudeNet TP ブースターを適用する（TP 増加）。
+            環境変数 USE_NUDENET_BOOSTER=1 でも有効化できる。
         """
+        import os
         self.interval = interval
+        self.use_cv_gate = use_cv_gate or os.environ.get("USE_CV_GATE", "0") == "1"
+        self.use_nudenet_booster = use_nudenet_booster or os.environ.get("USE_NUDENET_BOOSTER", "0") == "1"
         self._client, self._model = self._init_client()
 
-        # MediaPipe verifier（遅延ロード）
+        # MediaPipe verifier（遅延ロード・インスタンスレベル）
         self._mp_checker = None
         self._mp_load_failed = False
 
@@ -499,7 +528,21 @@ class VisionLimbChecker:
             logger.error(f"API 呼び出し失敗 ({path}): {e}")
             return LimbCheckResult(path=path, ok=True, error=f"api error: {e}")
 
-        return self._parse_response(raw, path)
+        result = self._parse_response(raw, path)
+
+        # JSON パース失敗時は temperature=0.0 で 1 回だけリトライ
+        if result.error.startswith(("parse error", "json error")):
+            logger.warning(f"JSON パース失敗 → リトライ ({Path(path).name})")
+            try:
+                raw_retry = self._call_api_retry(b64)
+                result_retry = self._parse_response(raw_retry, path)
+                if not result_retry.error:
+                    return result_retry
+                logger.warning(f"リトライ後もパース失敗 ({Path(path).name}) → fail-open")
+            except Exception as e:
+                logger.warning(f"リトライ API 呼び出し失敗 ({Path(path).name}): {e}")
+
+        return result
 
     def check_batch(self, image_paths: list[str | Path]) -> list[LimbCheckResult]:
         """複数画像を逐次処理する（インターバルあり）。"""
@@ -523,6 +566,18 @@ class VisionLimbChecker:
             b64 = self._encode_image(path)
             raw2 = self._call_api_pass2(b64)
             result2 = self._parse_response(raw2, path, filter_pats=_FILTER_PATS_PASS2)
+            # Pass2 JSON パース失敗時はリトライ（1 回のみ）
+            if result2.error.startswith(("parse error", "json error")):
+                logger.warning(f"Pass2 JSON パース失敗 → リトライ ({Path(path).name})")
+                try:
+                    raw2_retry = self._call_api_retry(b64)
+                    result2_retry = self._parse_response(raw2_retry, path, filter_pats=_FILTER_PATS_PASS2)
+                    if not result2_retry.error:
+                        result2 = result2_retry
+                    else:
+                        logger.warning(f"Pass2 リトライ後もパース失敗 ({Path(path).name}) → fail-open")
+                except Exception as retry_e:
+                    logger.warning(f"Pass2 リトライ API 失敗 ({Path(path).name}): {retry_e}")
         except Exception as e:
             logger.warning(f"Pass 2 失敗 ({Path(path).name}): {e}  — Pass 1 結果を使用")
             return result1
@@ -536,39 +591,54 @@ class VisionLimbChecker:
             )
 
         merged = list(dict.fromkeys(result1.issues + result2.issues))
-        return LimbCheckResult(
+        final = LimbCheckResult(
             path=path,
             ok=False,
             issues=merged,
             confidence=max(result1.confidence, result2.confidence),
         )
+        # CV AND gate: VLM-NG のみ起動（OK 時はスキップしてレイテンシ影響なし）
+        if self.use_cv_gate:
+            final = self._apply_gate_verifiers(final, path)
+        # NudeNet TP booster: VLM-OK でも起動し、futanari を検出して昇格
+        if self.use_nudenet_booster and final.ok:
+            final = self._boost_nudenet(final, path)
+        return final
 
     # ──────────────────────────────────────────────────────────────
     # Private helpers
     # ──────────────────────────────────────────────────────────────
 
     def _apply_gate_verifiers(self, result: "LimbCheckResult", image_path: str) -> "LimbCheckResult":
-        """VLM-NG 結果に対してカテゴリ別 AND gate を適用する。
+        """VLM-NG 結果に対してカテゴリ別 AND gate を順に適用するディスパッチャ。
 
-        現在のゲート:
-          IMPOSSIBLE_BEND / BACKWARD_LEG → MediaPipe 3D 角度検証
-            - MediaPipe=OK → 当該 issue を除去（FP 降格）
-            - MediaPipe=NG または失敗 → VLM 判定を維持（fail-open）
+        各 gate は独立して動作し、前の gate が降格した結果に次の gate が続けて適用される。
+        VLM=OK には一切適用しない（レイテンシへの影響なし）。
 
-        Returns
-        -------
-        LimbCheckResult
-            ゲート適用後の結果（issue が全削除されれば ok=True に昇格）
+        ゲート追加方法:
+          1. _gate_XXX(result, image_path) メソッドを実装する
+          2. 下の「# Phase N:」行のコメントを外してパイプラインに追加する
         """
         if result.ok:
-            return result  # VLM=OK には適用しない
+            return result
 
-        # IB/BACKWARD_LEG issue を持つかチェック
-        gatable_issues = [iss for iss in result.issues if self._MEDIAPIPE_GATE_PATS.search(iss)]
-        if not gatable_issues:
-            return result  # 対象カテゴリなし → そのまま通す
+        # Phase 1: MediaPipe AND gate → IMPOSSIBLE_BEND / BACKWARD_LEG
+        result = self._gate_mediapipe(result, image_path)
 
-        # MediaPipe を遅延ロード（失敗済みなら fail-open）
+        # Phase 3: DWPose bbox overlap gate → BODY_FUSION
+        result = self._gate_dwpose(result, image_path)
+
+        return result
+
+    def _gate_mediapipe(self, result: "LimbCheckResult", image_path: str) -> "LimbCheckResult":
+        """MediaPipe AND gate: IMPOSSIBLE_BEND / BACKWARD_LEG を CV で後段検証。
+
+        MediaPipe=OK → issue を除去（FP 降格）。失敗時は fail-open（VLM 判定を維持）。
+        """
+        gatable = [iss for iss in result.issues if self._MEDIAPIPE_GATE_PATS.search(iss)]
+        if not gatable:
+            return result
+
         if self._mp_load_failed:
             return result
 
@@ -582,7 +652,6 @@ class VisionLimbChecker:
                 self._mp_load_failed = True
                 return result
 
-        # 画像を読み込んで MediaPipe に渡す（日本語パス対応: PIL 経由）
         try:
             import numpy as np
             import cv2
@@ -597,35 +666,184 @@ class VisionLimbChecker:
             return result
 
         if mp_ok:
-            # MediaPipe が OK → gatable な issue を除去
             remaining = [iss for iss in result.issues if not self._MEDIAPIPE_GATE_PATS.search(iss)]
             if remaining:
                 logger.info(
                     f"[HybridGate] {Path(image_path).name}: IB/BL issues removed by MediaPipe, "
-                    f"still NG ({len(remaining)} issue remaining)"
+                    f"still NG ({len(remaining)} issues remaining)"
                 )
-                return LimbCheckResult(
-                    path=result.path,
-                    ok=False,
-                    issues=remaining,
-                    confidence=result.confidence,
-                )
+                return LimbCheckResult(path=result.path, ok=False, issues=remaining, confidence=result.confidence)
             else:
-                logger.info(
-                    f"[HybridGate] {Path(image_path).name}: VLM NG but MediaPipe OK → 降格 OK"
-                )
-                return LimbCheckResult(
-                    path=result.path,
-                    ok=True,
-                    issues=[],
-                    confidence=result.confidence,
-                )
+                logger.info(f"[HybridGate] {Path(image_path).name}: VLM NG but MediaPipe OK → 降格 OK")
+                return LimbCheckResult(path=result.path, ok=True, issues=[], confidence=result.confidence)
         else:
-            # MediaPipe も NG → VLM 判定を維持
-            logger.debug(
-                f"[HybridGate] {Path(image_path).name}: MediaPipe confirms NG {mp_issues}"
-            )
+            logger.debug(f"[HybridGate] {Path(image_path).name}: MediaPipe confirms NG {mp_issues}")
             return result
+
+    def _gate_dwpose(self, result: "LimbCheckResult", image_path: str) -> "LimbCheckResult":
+        """Phase 3: DWPose bbox overlap gate → BODY_FUSION。
+
+        2人体の bbox IoU < 0.15 → 体が明確に分離 → BODY_FUSION issue を除去（FP 降格）。
+        2体検出できない場合・例外は fail-open（VLM 判定を維持）。
+        """
+        gatable = [iss for iss in result.issues if self._BODY_FUSION_GATE_PATS.search(iss)]
+        if not gatable:
+            return result
+
+        cls = self.__class__
+        if cls._dwpose_load_failed:
+            return result
+
+        if cls._dwpose_checker is None:
+            try:
+                from modules.dwpose_utils import DWPoseChecker
+                cls._dwpose_checker = DWPoseChecker()
+                logger.info("[HybridGate] DWPoseChecker ロード成功")
+            except Exception as e:
+                logger.warning(f"[HybridGate] DWPose ロード失敗 → fail-open: {e}")
+                cls._dwpose_load_failed = True
+                return result
+
+        try:
+            import numpy as np
+            import cv2
+            from PIL import Image as _PIL_Image
+            with _PIL_Image.open(image_path) as _img:
+                _img_rgb = _img.convert("RGB")
+                _img_rgb.load()
+            img_bgr = cv2.cvtColor(np.array(_img_rgb), cv2.COLOR_RGB2BGR)
+            boxes = cls._dwpose_checker._detect_persons(img_bgr, max_det=2)
+        except Exception as e:
+            logger.warning(f"[HybridGate] DWPose 実行失敗 → fail-open ({Path(image_path).name}): {e}")
+            return result
+
+        if len(boxes) < 2:
+            logger.debug(f"[HybridGate] {Path(image_path).name}: DWPose {len(boxes)} person → fail-open")
+            return result
+
+        iou = self._bbox_iou(boxes[0], boxes[1])
+        logger.debug(f"[HybridGate] {Path(image_path).name}: DWPose bbox IoU={iou:.3f}")
+
+        if iou < 0.15:
+            remaining = [iss for iss in result.issues if not self._BODY_FUSION_GATE_PATS.search(iss)]
+            if remaining:
+                logger.info(
+                    f"[HybridGate] {Path(image_path).name}: BODY_FUSION removed by DWPose (IoU={iou:.3f}), "
+                    f"still NG ({len(remaining)} issues remaining)"
+                )
+                return LimbCheckResult(path=result.path, ok=False, issues=remaining, confidence=result.confidence)
+            else:
+                logger.info(f"[HybridGate] {Path(image_path).name}: VLM NG but DWPose separate (IoU={iou:.3f}) → 降格 OK")
+                return LimbCheckResult(path=result.path, ok=True, issues=[], confidence=result.confidence)
+        else:
+            logger.debug(f"[HybridGate] {Path(image_path).name}: DWPose confirms BODY_FUSION (IoU={iou:.3f})")
+            return result
+
+    def _boost_nudenet(self, result: "LimbCheckResult", image_path: str) -> "LimbCheckResult":
+        """Phase 2: NudeNet TP booster。VLM=OK 画像で futanari を検出して NG 昇格。
+
+        条件（AND）:
+          1. MALE_GENITALIA_EXPOSED bbox 検出 (confidence >= 0.5)
+          2. bbox 面積が画像の 0.5% 以上（顔誤検出除外）
+          3. DWPose で 1 体のみ検出（男性不在 = solo 場面）
+        """
+        if not result.ok:
+            return result
+
+        cls = self.__class__
+        if cls._nudenet_load_failed:
+            return result
+
+        if cls._nudenet_detector is None:
+            try:
+                from nudenet import NudeDetector
+                cls._nudenet_detector = NudeDetector()
+                logger.info("[NudeBoost] NudeDetector ロード成功")
+            except Exception as e:
+                logger.warning(f"[NudeBoost] NudeNet ロード失敗 → fail-open: {e}")
+                cls._nudenet_load_failed = True
+                return result
+
+        try:
+            import numpy as np
+            from PIL import Image as _PIL_Image
+            with _PIL_Image.open(image_path) as _img:
+                img_rgb = np.array(_img.convert("RGB"))
+            detections = cls._nudenet_detector.detect(img_rgb)
+        except Exception as e:
+            logger.warning(f"[NudeBoost] NudeNet 実行失敗 → fail-open ({Path(image_path).name}): {e}")
+            return result
+
+        img_area = img_rgb.shape[0] * img_rgb.shape[1]
+        valid = []
+        for d in detections:
+            label = d.get("class", d.get("label", ""))
+            score = d.get("score", 0.0)
+            if label != "MALE_GENITALIA_EXPOSED" or score < 0.5:
+                continue
+            box = d.get("box", [])
+            if len(box) >= 4:
+                bw, bh = abs(box[2] - box[0]), abs(box[3] - box[1])
+                if (bw * bh) / img_area >= 0.005:
+                    valid.append(d)
+
+        if not valid:
+            return result
+
+        # DWPose で人体数チェック（2体以上 = 男性が存在 → 通常の性交 → 昇格しない）
+        person_count = self._count_persons_dwpose(image_path)
+        if person_count != 1:
+            logger.debug(f"[NudeBoost] {Path(image_path).name}: {person_count} persons → skip")
+            return result
+
+        best = max(valid, key=lambda d: d.get("score", 0))
+        conf = best.get("score", 0.5)
+        logger.info(f"[NudeBoost] {Path(image_path).name}: MALE_GENITALIA_EXPOSED (conf={conf:.2f}) + solo → NG 昇格")
+        return LimbCheckResult(
+            path=result.path,
+            ok=False,
+            issues=[f"WRONG GENITALS: erect shaft detected by NudeNet (conf={conf:.2f}) with no male body present"],
+            confidence=conf,
+        )
+
+    def _count_persons_dwpose(self, image_path: str) -> int:
+        """DWPose で検出される人体数を返す。ロード失敗時は -1（判定不可）。"""
+        cls = self.__class__
+        if cls._dwpose_load_failed:
+            return -1
+        if cls._dwpose_checker is None:
+            try:
+                from modules.dwpose_utils import DWPoseChecker
+                cls._dwpose_checker = DWPoseChecker()
+            except Exception as e:
+                logger.warning(f"[NudeBoost] DWPose ロード失敗: {e}")
+                cls._dwpose_load_failed = True
+                return -1
+        try:
+            import numpy as np
+            import cv2
+            from PIL import Image as _PIL_Image
+            with _PIL_Image.open(image_path) as _img:
+                _img_rgb = _img.convert("RGB")
+                _img_rgb.load()
+            img_bgr = cv2.cvtColor(np.array(_img_rgb), cv2.COLOR_RGB2BGR)
+            boxes = cls._dwpose_checker._detect_persons(img_bgr, max_det=2)
+            return len(boxes)
+        except Exception:
+            return -1
+
+    @staticmethod
+    def _bbox_iou(box_a, box_b) -> float:
+        """2 つの bbox [x1, y1, x2, y2] の IoU を計算する。"""
+        x1 = max(box_a[0], box_b[0])
+        y1 = max(box_a[1], box_b[1])
+        x2 = min(box_a[2], box_b[2])
+        y2 = min(box_a[3], box_b[3])
+        inter = max(0.0, x2 - x1) * max(0.0, y2 - y1)
+        area_a = (box_a[2] - box_a[0]) * (box_a[3] - box_a[1])
+        area_b = (box_b[2] - box_b[0]) * (box_b[3] - box_b[1])
+        union = area_a + area_b - inter
+        return float(inter / union) if union > 0 else 0.0
 
     @staticmethod
     def _encode_image(path: str) -> str:
@@ -641,8 +859,8 @@ class VisionLimbChecker:
             return base64.b64encode(buf.getvalue()).decode("utf-8")
 
     def _call_api(self, b64: str) -> str:
-        """Vision LLM API を呼び出してテキストレスポンスを返す。
-        Qwen3 の thinking mode を有効化して推論精度を向上させる。
+        """Vision LLM API を呼び出してテキストレスポンスを返す（Pass1）。
+        prefix なしで呼び出す。Qwen3-VL 系は完全な JSON を自力で返すため prefix 不要。
         """
         response = self._client.chat.completions.create(
             model=self._model,
@@ -661,14 +879,17 @@ class VisionLimbChecker:
                     ],
                 }
             ],
-            temperature=0.2,
-            max_tokens=1024,  # input=2561tokens, 4096-2561=1535available → thinking無効化でJSON確保
-            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+            temperature=INFER_PASS1["temperature"],
+            max_tokens=INFER_PASS1["max_tokens"],
+            extra_body={"chat_template_kwargs": {"enable_thinking": INFER_PASS1["enable_thinking"]}},
         )
         return response.choices[0].message.content or ""
 
     def _call_api_pass2(self, b64: str) -> str:
-        """Pass 2 用の Vision LLM API 呼び出し（短いプロンプト・長い thinking 枠）。"""
+        """Pass 2 用の Vision LLM API 呼び出し（短いプロンプト・長い thinking 枠）。
+        enable_thinking=True のため Assistant Prefix は使用しない（競合するため）。
+        プロンプト末尾強化 + リトライの 2 段構えで JSON 非遵守を防ぐ。
+        """
         response = self._client.chat.completions.create(
             model=self._model,
             messages=[
@@ -686,11 +907,43 @@ class VisionLimbChecker:
                     ],
                 }
             ],
-            temperature=0.2,
-            max_tokens=1536,  # Pass 2 はプロンプトが短い分 thinking に余裕を持たせる
-            extra_body={"chat_template_kwargs": {"enable_thinking": True}},
+            temperature=INFER_PASS2["temperature"],
+            max_tokens=INFER_PASS2["max_tokens"],
+            extra_body={"chat_template_kwargs": {"enable_thinking": INFER_PASS2["enable_thinking"]}},
         )
         return response.choices[0].message.content or ""
+
+    def _call_api_retry(self, b64: str) -> str:
+        """JSON パース失敗時のリトライ用 API 呼び出し。
+        temperature=0.0 + 短い max_tokens + Assistant Prefix で JSON を強制する。
+        enable_thinking=False のため Assistant Prefix を安全に使用できる。
+        """
+        response = self._client.chat.completions.create(
+            model=self._model,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": LIMB_CHECK_PROMPT},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{b64}",
+                                "detail": "high",
+                            },
+                        },
+                    ],
+                },
+                {"role": "assistant", "content": '{"ok":'},  # JSON 強制 prefix（"ok" キーまで指定して続きを強制）
+            ],
+            temperature=INFER_RETRY["temperature"],
+            max_tokens=INFER_RETRY["max_tokens"],
+            extra_body={"chat_template_kwargs": {"enable_thinking": INFER_RETRY["enable_thinking"]}},
+        )
+        content = response.choices[0].message.content or ""
+        if content.lstrip().startswith("{"):
+            return content
+        return '{"ok":' + content
 
     @staticmethod
     def _parse_response(raw: str, path: str, filter_pats=None) -> LimbCheckResult:
