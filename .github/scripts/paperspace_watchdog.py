@@ -81,10 +81,16 @@ def paperspace(path: str, method: str = "GET", **kw):
     raise RuntimeError(f"Paperspace API 疎通不可 (両エンドポイント失敗): {last_err}")
 
 
-def notebook_state() -> str:
+def notebook_info() -> dict:
     data = paperspace(f"/notebooks/{NOTEBOOK_ID}")
-    state = data.get("state", data.get("status", "unknown"))
-    return state
+    safe_keys = {"state", "status", "machineType", "clusterId", "projectId", "name", "id"}
+    print("  notebook fields:", {k: v for k, v in data.items() if k in safe_keys})
+    return data
+
+
+def notebook_state() -> str:
+    data = notebook_info()
+    return data.get("state", data.get("status", "unknown"))
 
 
 # ---------------------------------------------------------------------------
@@ -117,6 +123,48 @@ def read_sd_url_age() -> float:
     except Exception as e:
         print(f"  WARN: sd_url.json 取得失敗: {e}")
         return float("inf")
+
+
+# ---------------------------------------------------------------------------
+# Notebook 起動（複数手段を順に試みる）
+# ---------------------------------------------------------------------------
+
+def _start_notebook():
+    errors = []
+
+    # 手段1: /start エンドポイント
+    try:
+        paperspace(f"/notebooks/{NOTEBOOK_ID}/start", method="POST")
+        print("  ✓ POST /start 成功")
+        return
+    except Exception as e:
+        errors.append(f"/start: {e}")
+
+    # 手段2: gradient Python SDK
+    try:
+        from gradient import NotebooksClient
+        client = NotebooksClient(api_key=API_KEY)
+        client.start(id=NOTEBOOK_ID)
+        print("  ✓ gradient SDK start 成功")
+        return
+    except Exception as e:
+        errors.append(f"gradient SDK: {e}")
+
+    # 手段3: POST /notebooks に machineType を付けて試みる
+    try:
+        nb = notebook_info()
+        machine_type = nb.get("machineType", "Free-GPU")
+        paperspace("/notebooks", method="POST", json={
+            "notebookId": NOTEBOOK_ID,
+            "machineType": machine_type,
+        })
+        print("  ✓ POST /notebooks (machineType) 成功")
+        return
+    except Exception as e:
+        errors.append(f"POST /notebooks: {e}")
+
+    print(f"  ERROR: 全手段失敗: {errors}")
+    sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -156,20 +204,9 @@ def main():
     if state.lower() not in ("running",):
         print(f"→ Notebook が停止中 ({state})。再起動します。")
         if DRY_RUN:
-            print("  [DRY_RUN] POST /notebooks/{id}/start をスキップ")
+            print("  [DRY_RUN] start をスキップ")
         else:
-            try:
-                paperspace(f"/notebooks/{NOTEBOOK_ID}/start", method="POST")
-                print("  start リクエスト送信完了。")
-            except Exception as e:
-                print(f"  WARN: /start 失敗 ({e})。/notebooks への POST を試みます。")
-                try:
-                    paperspace("/notebooks", method="POST",
-                               json={"notebookId": NOTEBOOK_ID})
-                    print("  POST /notebooks 送信完了。")
-                except Exception as e2:
-                    print(f"  ERROR: 再起動失敗: {e2}")
-                    sys.exit(1)
+            _start_notebook()
         sys.exit(0)
 
     # ── running だが URL が古い場合は stop → start ───────────────────────────
