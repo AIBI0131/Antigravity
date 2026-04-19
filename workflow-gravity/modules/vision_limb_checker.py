@@ -185,8 +185,11 @@ _FILTER_PATS_PASS1 = [
     re.compile(r"WRONG\s+GENITALS.{0,300}\b(?:could\s+be|might\s+be|possibly|unclear|ambiguous)\b", re.IGNORECASE | re.DOTALL),
     # WRONG GENITALS — cowgirl (NGimage TP すべてに DEFORMED/REVERSED/DUPLICATE バックアップあり)
     re.compile(r"WRONG\s+GENITALS.{0,200}\bcowgirl\b", re.IGNORECASE | re.DOTALL),
-    # DEFORMED BODY PART — breast (NGimage TP の DEFORMED はすべて buttocks、breast は全 FP)
-    re.compile(r"DEFORMED.{0,100}\bbreast", re.IGNORECASE | re.DOTALL),
+    # DEFORMED BODY PART — breast: "spiral rope / corkscrew" だけの記述は FP（OK 画像でも出る）
+    # "folded inward / inverted / impossible shape" と組み合わさった場合のみ通す → 00092/00106 TP 保持
+    re.compile(r"DEFORMED.{0,300}\bbreast.{0,300}\b(?:spiral|corkscrew|rope)\b(?!.{0,200}\bfold)", re.IGNORECASE | re.DOTALL),
+    re.compile(r"DEFORMED.{0,200}\bbreast.{0,200}\b(?:large|big|huge|oversized|round|smooth|asymmetric|different\s+size|uneven|heavy|full|gravity)\b", re.IGNORECASE | re.DOTALL),
+    re.compile(r"DEFORMED.{0,200}\bbreast.{0,200}\b(?:appear\s+(?:normal|natural|realistic|proportional)|due\s+to\s+(?:gravity|weight|compression))\b", re.IGNORECASE | re.DOTALL),
     # REVERSED MALE — paizuri (NGimage TP の REVERSED MALE に paizuri 言及なし)
     re.compile(r"REVERSED\s+MALE.{0,300}\bpaizuri\b", re.IGNORECASE | re.DOTALL),
     # REVERSED MALE — モデルがルール文をそのまま出力した場合
@@ -280,6 +283,8 @@ _FILTER_PATS_PASS1 = [
     # BACKWARD LEG — モデルがルール文をそのまま出力した場合（"Do NOT flag" または "ONLY flag when" がissue内に含まれる）
     re.compile(r"BACKWARD\s+LEG.{0,100}\bDo\s+NOT\s+flag\b", re.IGNORECASE | re.DOTALL),
     re.compile(r"BACKWARD\s+LEG.{0,100}\bONLY\s+flag\s+when\b", re.IGNORECASE | re.DOTALL),
+    # BACKWARD LEG — "steeply upward AND backward past hip joint" は性行為中の体位（正常） → FP
+    re.compile(r"BACKWARD\s+LEG:[^/\n]*\bsteeply\s+upward\b.{0,100}\bbackward\s+past\s+(?:the\s+)?hip\b", re.IGNORECASE | re.DOTALL),
     # BACKWARD LEG — "lower legs" 複数形（膝まずき・doggy-style の正常な下腿後方折れを誤検知）
     re.compile(r"BACKWARD\s+LEG:[^/\n]*\blower\s+legs\b", re.IGNORECASE),
     # BACKWARD LEG — "lower leg/foot extends behind * torso plane"（"the" の有無を問わず）
@@ -290,6 +295,9 @@ _FILTER_PATS_PASS1 = [
     re.compile(r"BACKWARD\s+LEG:[^/\n]*\blower\s+leg/foot\s+extends\s+behind\b.{0,30}\bback\s+plane\b", re.IGNORECASE),
     # BACKWARD LEG — "extends behind spine/torso plane" が足の位置言及なし（thigh/knee が後ろに行くだけで足未確認 → FP）
     re.compile(r"BACKWARD\s+LEG:[^/\n]*\bextends\s+behind\b.{0,80}\b(?:spine|torso)\s+plane\b(?!.{0,300}\bfoot\b)", re.IGNORECASE | re.DOTALL),
+    # IMPOSSIBLE BEND — 脊椎・腰部の過伸展（エロポーズのアーチ → 解剖学的に可能 → FP）
+    re.compile(r"IMPOSSIBLE\s+BEND:[^/\n]*\b(?:spine|lower\s+back|torso|waist)\b.{0,120}\bhyperextend", re.IGNORECASE | re.DOTALL),
+    re.compile(r"IMPOSSIBLE\s+BEND:[^/\n]*\bhyperextend.{0,120}\b(?:spine|lower\s+back|torso|waist)\b", re.IGNORECASE | re.DOTALL),
 ]
 
 # Pass 2 フィルター（Pass 2 の 4 カテゴリに関係するもののみ）
@@ -392,12 +400,17 @@ class VisionLimbChecker:
     )
     # Phase 3: DWPose AND gate パターン
     _BODY_FUSION_GATE_PATS = re.compile(r"BODY\s+FUSION", re.IGNORECASE)
+    # Phase 4: WRONG GENITALS AND gate パターン（カスタムONNXで確認）
+    _WRONG_GENITALS_GATE_PATS = re.compile(r"WRONG\s+GENITALS", re.IGNORECASE)
 
-    # DWPose / NudeNet クラスレベルシングルトン（VRAM 節約のため複数インスタンス共有）
+    # DWPose / カスタムONNX クラスレベルシングルトン（VRAM 節約のため複数インスタンス共有）
     _dwpose_checker = None
     _dwpose_load_failed = False
     _nudenet_detector = None
     _nudenet_load_failed = False
+    _custom_onnx_session = None   # アニメ専用カスタムモデル（auto_mosaic と同じ fixed_model.onnx）
+    _custom_onnx_input_size = 640
+    _custom_onnx_load_failed = False
 
     def __init__(
         self,
@@ -631,6 +644,10 @@ class VisionLimbChecker:
         # Phase 3: DWPose bbox overlap gate → BODY_FUSION
         result = self._gate_dwpose(result, image_path)
 
+        # Phase 4: カスタムONNX AND gate → WRONG_GENITALS
+        if self.use_nudenet_booster:
+            result = self._gate_wrong_genitals(result, image_path)
+
         return result
 
     def _gate_mediapipe(self, result: "LimbCheckResult", image_path: str) -> "LimbCheckResult":
@@ -670,7 +687,7 @@ class VisionLimbChecker:
 
         n_poses = mp_meta.get("mediapipe_poses", 0)
         if n_poses == 0:
-            logger.info(f"[HybridGate] {Path(image_path).name}: MediaPipe 0 persons → fail-open (NG 維持)")
+            logger.info(f"[HybridGate] {Path(image_path).name}: MediaPipe 0 persons → fail-closed (NG 維持)")
             return result
 
         if mp_ok:
@@ -747,21 +764,204 @@ class VisionLimbChecker:
             logger.debug(f"[HybridGate] {Path(image_path).name}: DWPose confirms BODY_FUSION (IoU={iou:.3f})")
             return result
 
+    def _gate_wrong_genitals(self, result: "LimbCheckResult", image_path: str) -> "LimbCheckResult":
+        """Phase 4: WRONG GENITALS AND gate — カスタムONNXで生殖器を確認。
+
+        VLM が WRONG GENITALS と判定 → カスタムONNXで MALE_GENITALIA_EXPOSED を検索。
+        ONNX が検出しない → FP の可能性が高いため WRONG GENITALS issue を降格。
+        ONNX が検出 or 失敗 → VLM 判定を維持（fail-open）。
+        """
+        gatable = [iss for iss in result.issues if self._WRONG_GENITALS_GATE_PATS.search(iss)]
+        if not gatable:
+            return result
+
+        detections = self._detect_genitalia_custom_onnx(image_path)
+        if detections is None:
+            logger.debug(f"[HybridGate] {Path(image_path).name}: CustomONNX 未ロード → WRONG GENITALS fail-open")
+            return result
+
+        img_area = self._get_image_area(image_path)
+        valid = [d for d in detections if d[1] >= 0.3 and d[2] >= 0.005 * img_area]
+
+        def _downgrade_wrong_genitals(reason: str):
+            remaining = [iss for iss in result.issues if not self._WRONG_GENITALS_GATE_PATS.search(iss)]
+            if remaining:
+                logger.info(f"[HybridGate] {Path(image_path).name}: {reason}, still NG ({len(remaining)} issues)")
+                return LimbCheckResult(path=result.path, ok=False, issues=remaining, confidence=result.confidence)
+            else:
+                logger.info(f"[HybridGate] {Path(image_path).name}: {reason} → 降格 OK")
+                return LimbCheckResult(path=result.path, ok=True, issues=[], confidence=result.confidence)
+
+        if valid:
+            best = max(valid, key=lambda d: d[1])
+            # ONNX detected — but only confirm as futanari if it's a solo scene.
+            # In multi-person scenes, male genitalia is expected (normal sex) → downgrade.
+            person_count = self._count_persons_dwpose(image_path)
+            if person_count >= 2:
+                logger.info(
+                    f"[HybridGate] {Path(image_path).name}: CustomONNX MALE_GENI conf={best[1]:.2f} "
+                    f"but {person_count} persons detected (normal scene)"
+                )
+                return _downgrade_wrong_genitals("WRONG GENITALS: ONNX detected but multi-person scene")
+            else:
+                logger.info(
+                    f"[HybridGate] {Path(image_path).name}: CustomONNX MALE_GENI conf={best[1]:.2f} "
+                    f"+ solo ({person_count} person) → WRONG GENITALS confirmed NG"
+                )
+                return result
+        else:
+            return _downgrade_wrong_genitals("WRONG GENITALS not confirmed by ONNX")
+
     def _boost_nudenet(self, result: "LimbCheckResult", image_path: str) -> "LimbCheckResult":
-        """Phase 2: NudeNet TP booster。VLM=OK 画像で futanari を検出して NG 昇格。
+        """Phase 2: アニメ専用カスタムONNX TP booster。VLM=OK 画像で futanari を検出して NG 昇格。
 
         条件（AND）:
-          1. MALE_GENITALIA_EXPOSED bbox 検出 (confidence >= 0.5)
+          1. MALE_GENITALIA_EXPOSED bbox 検出（カスタムONNX conf >= 0.3 または NudeNet conf >= 0.35）
           2. bbox 面積が画像の 0.5% 以上（顔誤検出除外）
           3. DWPose で 1 体のみ検出（男性不在 = solo 場面）
         """
         if not result.ok:
             return result
 
-        cls = self.__class__
-        if cls._nudenet_load_failed:
+        detections, conf_threshold, detector_name = self._detect_genitalia(image_path)
+        if detections is None:
+            return result  # ロード失敗 → fail-open
+
+        img_area = self._get_image_area(image_path)
+        valid = [d for d in detections if d[1] >= conf_threshold and d[2] >= 0.005 * img_area]
+
+        if not valid:
+            logger.info(f"[NudeBoost] {Path(image_path).name}: no MALE_GENITALIA_EXPOSED ({detector_name}) → skip")
             return result
 
+        person_count = self._count_persons_dwpose(image_path)
+        if person_count != 1:
+            logger.info(f"[NudeBoost] {Path(image_path).name}: {person_count} persons detected → skip (not solo)")
+            return result
+
+        best_conf = max(d[1] for d in valid)
+        logger.info(f"[NudeBoost] {Path(image_path).name}: MALE_GENITALIA_EXPOSED ({detector_name} conf={best_conf:.2f}) + solo → NG 昇格")
+        return LimbCheckResult(
+            path=result.path,
+            ok=False,
+            issues=[f"WRONG GENITALS: erect shaft detected by {detector_name} (conf={best_conf:.2f}) with no male body present"],
+            confidence=best_conf,
+        )
+
+    def _detect_genitalia(self, image_path: str):
+        """MALE_GENITALIA_EXPOSED を検出。(detections, threshold, name) を返す。
+        detections は [(label, score, area_px)] リスト。ロード失敗時は (None, 0, '') を返す。
+        カスタムONNXを優先し、失敗時は NudeNet にフォールバック。
+        """
+        # --- カスタム ONNX (アニメ専用、精度高) ---
+        result = self._detect_genitalia_custom_onnx(image_path)
+        if result is not None:
+            return result, 0.3, "CustomONNX"
+
+        # --- NudeNet フォールバック ---
+        return self._detect_genitalia_nudenet(image_path), 0.35, "NudeNet"
+
+    def _detect_genitalia_custom_onnx(self, image_path: str):
+        """カスタム YOLOv8-seg ONNX モデルで MALE_GENITALIA_EXPOSED を検出。
+        成功時: [(label, score, area_px)] リスト。失敗時: None。
+        """
+        import numpy as np
+        import cv2
+        cls = self.__class__
+        if cls._custom_onnx_load_failed:
+            return None
+
+        if cls._custom_onnx_session is None:
+            model_path = self._resolve_custom_onnx_path()
+            if not model_path:
+                cls._custom_onnx_load_failed = True
+                return None
+            try:
+                import onnxruntime as ort
+                providers = ["CPUExecutionProvider"]
+                sess = ort.InferenceSession(model_path, providers=providers)
+                shape = sess.get_inputs()[0].shape
+                h, w = shape[2], shape[3]
+                cls._custom_onnx_input_size = max(h, w) if isinstance(h, int) else 640
+                cls._custom_onnx_session = sess
+                logger.info(f"[NudeBoost] CustomONNX ロード成功: {model_path} (input={cls._custom_onnx_input_size})")
+            except Exception as e:
+                logger.warning(f"[NudeBoost] CustomONNX ロード失敗 → NudeNet フォールバック: {e}")
+                cls._custom_onnx_load_failed = True
+                return None
+
+        try:
+            from PIL import Image as _PIL
+            with _PIL.open(image_path) as _img:
+                img_bgr = cv2.cvtColor(np.array(_img.convert("RGB")), cv2.COLOR_RGB2BGR)
+
+            sz = cls._custom_onnx_input_size
+            orig_h, orig_w = img_bgr.shape[:2]
+            scale = sz / max(orig_h, orig_w)
+            new_w, new_h = int(orig_w * scale), int(orig_h * scale)
+            resized = cv2.resize(img_bgr, (new_w, new_h))
+            pad_x, pad_y = (sz - new_w) // 2, (sz - new_h) // 2
+            padded = np.full((sz, sz, 3), 114, dtype=np.uint8)
+            padded[pad_y:pad_y + new_h, pad_x:pad_x + new_w] = resized
+
+            blob = cv2.cvtColor(padded, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+            blob = blob.transpose(2, 0, 1)[np.newaxis]
+
+            input_name = cls._custom_onnx_session.get_inputs()[0].name
+            outputs = cls._custom_onnx_session.run(None, {input_name: blob})
+            preds = outputs[0][0].T  # [8400, 4+nc+nm]
+
+            boxes_cxcywh = preds[:, :4]
+            class_scores = preds[:, 4:7]  # 3 classes
+            max_scores = class_scores.max(axis=1)
+            class_ids = class_scores.argmax(axis=1)
+
+            MALE_GENI_CLASS = 1
+            mask = (max_scores >= 0.2) & (class_ids == MALE_GENI_CLASS)
+            indices = np.where(mask)[0]
+            if len(indices) == 0:
+                return []
+
+            # NMS
+            cx, cy, bw, bh = boxes_cxcywh[indices, 0], boxes_cxcywh[indices, 1], boxes_cxcywh[indices, 2], boxes_cxcywh[indices, 3]
+            x1, y1, x2, y2 = cx - bw/2, cy - bh/2, cx + bw/2, cy + bh/2
+            xyxy = np.stack([x1, y1, x2, y2], axis=1)
+            scores = max_scores[indices]
+
+            # 簡易 NMS
+            order = scores.argsort()[::-1]
+            keep = []
+            while len(order) > 0:
+                i = order[0]; keep.append(i)
+                if len(order) == 1: break
+                xx1 = np.maximum(xyxy[i, 0], xyxy[order[1:], 0])
+                yy1 = np.maximum(xyxy[i, 1], xyxy[order[1:], 1])
+                xx2 = np.minimum(xyxy[i, 2], xyxy[order[1:], 2])
+                yy2 = np.minimum(xyxy[i, 3], xyxy[order[1:], 3])
+                inter = np.maximum(0, xx2-xx1) * np.maximum(0, yy2-yy1)
+                areas = (xyxy[order[1:], 2]-xyxy[order[1:], 0]) * (xyxy[order[1:], 3]-xyxy[order[1:], 1])
+                iou = inter / (areas + (xyxy[i,2]-xyxy[i,0])*(xyxy[i,3]-xyxy[i,1]) - inter + 1e-6)
+                order = order[np.where(iou <= 0.45)[0] + 1]
+
+            results = []
+            for ki in keep:
+                bx1 = (xyxy[ki, 0] - pad_x) / scale
+                by1 = (xyxy[ki, 1] - pad_y) / scale
+                bx2 = (xyxy[ki, 2] - pad_x) / scale
+                by2 = (xyxy[ki, 3] - pad_y) / scale
+                area_px = max(0, bx2 - bx1) * max(0, by2 - by1)
+                results.append(("MALE_GENITALIA_EXPOSED", float(scores[ki]), float(area_px)))
+            return results
+        except Exception as e:
+            logger.warning(f"[NudeBoost] CustomONNX 実行失敗 ({Path(image_path).name}): {e}")
+            return None
+
+    def _detect_genitalia_nudenet(self, image_path: str):
+        """NudeNet フォールバック検出。[(label, score, area_px)] or None。"""
+        import numpy as np
+        cls = self.__class__
+        if cls._nudenet_load_failed:
+            return None
         if cls._nudenet_detector is None:
             try:
                 from nudenet import NudeDetector
@@ -770,50 +970,56 @@ class VisionLimbChecker:
             except Exception as e:
                 logger.warning(f"[NudeBoost] NudeNet ロード失敗 → fail-open: {e}")
                 cls._nudenet_load_failed = True
-                return result
-
+                return None
         try:
-            import numpy as np
-            from PIL import Image as _PIL_Image
-            with _PIL_Image.open(image_path) as _img:
+            from PIL import Image as _PIL
+            with _PIL.open(image_path) as _img:
                 img_rgb = np.array(_img.convert("RGB"))
-            detections = cls._nudenet_detector.detect(img_rgb)
+            raw = cls._nudenet_detector.detect(img_rgb)
+            results = []
+            for d in raw:
+                if d.get("class", d.get("label", "")) != "MALE_GENITALIA_EXPOSED":
+                    continue
+                box = d.get("box", [])
+                area = abs(box[2]-box[0]) * abs(box[3]-box[1]) if len(box) >= 4 else 0
+                results.append(("MALE_GENITALIA_EXPOSED", float(d.get("score", 0)), float(area)))
+            return results
         except Exception as e:
-            logger.warning(f"[NudeBoost] NudeNet 実行失敗 → fail-open ({Path(image_path).name}): {e}")
-            return result
+            logger.warning(f"[NudeBoost] NudeNet 実行失敗 ({Path(image_path).name}): {e}")
+            return None
 
-        img_area = img_rgb.shape[0] * img_rgb.shape[1]
-        valid = []
-        for d in detections:
-            label = d.get("class", d.get("label", ""))
-            score = d.get("score", 0.0)
-            if label != "MALE_GENITALIA_EXPOSED" or score < 0.35:
-                continue
-            box = d.get("box", [])
-            if len(box) >= 4:
-                bw, bh = abs(box[2] - box[0]), abs(box[3] - box[1])
-                if (bw * bh) / img_area >= 0.005:
-                    valid.append(d)
+    @staticmethod
+    def _get_image_area(image_path: str) -> float:
+        """画像の総ピクセル数を返す。失敗時は 1e6（閾値計算が実質無効化されないよう大きめ）。"""
+        try:
+            from PIL import Image as _PIL
+            with _PIL.open(image_path) as _img:
+                return float(_img.width * _img.height)
+        except Exception:
+            return 1_000_000.0
 
-        if not valid:
-            logger.info(f"[NudeBoost] {Path(image_path).name}: no MALE_GENITALIA_EXPOSED (conf≥0.35) → skip")
-            return result
-
-        # DWPose で人体数チェック（2体以上 = 男性が存在 → 通常の性交 → 昇格しない）
-        person_count = self._count_persons_dwpose(image_path)
-        if person_count != 1:
-            logger.info(f"[NudeBoost] {Path(image_path).name}: {person_count} persons detected → skip (not solo)")
-            return result
-
-        best = max(valid, key=lambda d: d.get("score", 0))
-        conf = best.get("score", 0.5)
-        logger.info(f"[NudeBoost] {Path(image_path).name}: MALE_GENITALIA_EXPOSED (conf={conf:.2f}) + solo → NG 昇格")
-        return LimbCheckResult(
-            path=result.path,
-            ok=False,
-            issues=[f"WRONG GENITALS: erect shaft detected by NudeNet (conf={conf:.2f}) with no male body present"],
-            confidence=conf,
-        )
+    @staticmethod
+    def _resolve_custom_onnx_path() -> str:
+        """config.yaml の mosaic.custom_model_path からモデルパスを解決する。"""
+        candidates = [
+            "C:/temp/AutoMosaicToolPro/fixed_model.onnx",
+        ]
+        try:
+            import yaml
+            config_path = Path(__file__).parent.parent / "config.yaml"
+            if config_path.exists():
+                with open(config_path, encoding="utf-8") as f:
+                    cfg = yaml.safe_load(f) or {}
+                p = cfg.get("mosaic", {}).get("custom_model_path", "")
+                if p:
+                    candidates.insert(0, p)
+        except Exception:
+            pass
+        for c in candidates:
+            if Path(c).exists():
+                return c
+        logger.warning(f"[NudeBoost] CustomONNX モデルが見つかりません: {candidates}")
+        return ""
 
     def _count_persons_dwpose(self, image_path: str) -> int:
         """DWPose で検出される人体数を返す。ロード失敗時は -1（判定不可）。"""
