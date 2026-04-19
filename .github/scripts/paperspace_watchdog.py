@@ -132,13 +132,18 @@ def notebook_state() -> str:
 # ---------------------------------------------------------------------------
 
 def read_sd_url_age() -> float:
-    """sd_url.json の timestamp から経過秒数を返す。取得失敗時は inf。"""
+    """sd_url.json の timestamp から経過秒数を返す。未設定・取得失敗時は None。"""
+    sa_json = os.environ.get("GDRIVE_SA_JSON", "").strip()
+    file_id = os.environ.get("GDRIVE_SD_URL_FILE_ID", "").strip()
+    if not sa_json or not file_id:
+        print("  INFO: GDRIVE 未設定のため sd_url.json チェックをスキップ")
+        return None
     try:
         from google.auth.transport.requests import Request
         from google.oauth2 import service_account
         from googleapiclient.discovery import build
 
-        sa_info = json.loads(os.environ["GDRIVE_SA_JSON"])
+        sa_info = json.loads(sa_json)
         creds = service_account.Credentials.from_service_account_info(
             sa_info,
             scopes=["https://www.googleapis.com/auth/drive.readonly"],
@@ -147,16 +152,16 @@ def read_sd_url_age() -> float:
         drive = build("drive", "v3", credentials=creds)
         content = (
             drive.files()
-            .get_media(fileId=os.environ["GDRIVE_SD_URL_FILE_ID"])
+            .get_media(fileId=file_id)
             .execute()
         )
         data = json.loads(content)
         age = time.time() - data["timestamp"]
-        print(f"  sd_url.json timestamp: {data['timestamp']}, age: {age/3600:.2f}h, url: {data.get('url','?')}")
+        print(f"  sd_url.json age: {age/3600:.2f}h, url: {data.get('url','?')}")
         return age
     except Exception as e:
         print(f"  WARN: sd_url.json 取得失敗: {e}")
-        return float("inf")
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -262,17 +267,22 @@ def main():
 
     # ── running だが URL が古い場合は stop → start ───────────────────────────
     age = read_sd_url_age()
+    if age is None:
+        print("→ Notebook は Running。GDRIVE 未設定のため URL 鮮度チェックをスキップ。正常終了。")
+        sys.exit(0)
+
     if age > STALE_THRESHOLD:
         print(f"→ sd_url.json が古すぎます ({age/3600:.2f}h > {STALE_THRESHOLD/3600:.2f}h)。強制再起動します。")
         if DRY_RUN:
             print("  [DRY_RUN] stop/start をスキップ")
             sys.exit(0)
-
-        paperspace(f"/notebooks/{NOTEBOOK_ID}/stop", method="POST")
-        print("  stop リクエスト送信完了。")
-        if wait_until_stopped():
-            paperspace(f"/notebooks/{NOTEBOOK_ID}/start", method="POST")
-            print("  start リクエスト送信完了。")
+        try:
+            paperspace(f"/notebooks/{NOTEBOOK_ID}/stop", method="POST")
+            print("  stop リクエスト送信完了。")
+            if wait_until_stopped():
+                _start_notebook()
+        except Exception as e:
+            print(f"  WARN: stop/start 失敗 ({e})。手動での再起動が必要です。")
         sys.exit(0)
 
     print(f"→ Notebook は正常稼働中 (age={age/3600:.2f}h)。何もしません。")
