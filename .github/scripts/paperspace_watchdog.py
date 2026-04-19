@@ -75,6 +75,7 @@ def paperspace(path: str, method: str = "GET", **kw):
                 return result
             return _try_endpoint(ep, path, method, **kw)
         except Exception as e:
+            print(f"  endpoint {ep['base']} 失敗: {e}")
             last_err = e
             continue
 
