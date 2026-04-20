@@ -87,25 +87,56 @@ else
     echo "WARN: $TEMPLATE が見つかりません（Gravity API 機能なしで起動）"
 fi
 
-# ── 6. cloudflared トンネル＋URL 同期（バックグラウンド） ────────────────────
-CF_BIN="$CF"
-nohup bash -c "
-    \"$CF_BIN\" tunnel --url http://127.0.0.1:7860 2>&1 | tee /notebooks/cf.log |
-    while IFS= read -r line; do
-        if echo \"\$line\" | grep -oE 'https://[a-z0-9-]+\\.trycloudflare\\.com' > /tmp/cf_url; then
-            URL=\$(cat /tmp/cf_url)
-            TS=\$(date +%s)
-            echo \"{\\\"url\\\":\\\"\$URL\\\",\\\"timestamp\\\":\$TS,\\\"source\\\":\\\"paperspace\\\"}\" \
-                > /storage/sd_url.json
-            if [ \"$RCLONE_AVAILABLE\" = true ]; then
-                rclone copyto /storage/sd_url.json gdrive:Antigravity/sd_url.json \
-                    && echo \"✅ sd_url.json → Drive 同期: \$URL\" \
-                    || echo \"WARN: rclone 同期失敗\"
-            fi
-            break
-        fi
+# ── 6. cloudflared トンネル起動（http2・リトライ3回・Notion URL 通知） ──
+cat > /tmp/cf_start.sh << 'CFEOF'
+#!/bin/bash
+CF_BIN="$1"
+NOTION_TOKEN="$2"
+NOTION_URL_PAGE_ID="$3"
+
+for attempt in 1 2 3; do
+    echo "[cf] 試行 $attempt/3 ($(date))"
+    > /notebooks/cf.log
+    "$CF_BIN" tunnel --url http://127.0.0.1:7860 --protocol http2 \
+        >> /notebooks/cf.log 2>&1 &
+    CF_PID=$!
+
+    URL=""
+    for i in $(seq 1 60); do
+        sleep 1
+        URL=$(grep -oE "https://[a-z0-9-]+\.trycloudflare\.com" /notebooks/cf.log | tail -1)
+        [ -n "$URL" ] && break
     done
-" &
+
+    if [ -n "$URL" ]; then
+        TS=$(date +%s)
+        printf '{"url":"%s","timestamp":%d}\n' "$URL" "$TS" > /notebooks/sd_url.json
+        echo "[cf] ✅ URL 取得: $URL"
+
+        if [ -n "$NOTION_TOKEN" ] && [ -n "$NOTION_URL_PAGE_ID" ]; then
+            curl -s -X PATCH "https://api.notion.com/v1/pages/$NOTION_URL_PAGE_ID" \
+                -H "Authorization: Bearer $NOTION_TOKEN" \
+                -H "Notion-Version: 2022-06-28" \
+                -H "Content-Type: application/json" \
+                -d "{\"properties\":{\"title\":{\"title\":[{\"text\":{\"content\":\"$URL\"}}]}}}" \
+                > /dev/null \
+                && echo "[cf] ✅ Notion URL 更新済" \
+                || echo "[cf] WARN: Notion 更新失敗"
+        fi
+
+        wait $CF_PID
+        exit 0
+    fi
+
+    echo "[cf] URL 取得失敗 → 再試行"
+    kill $CF_PID 2>/dev/null; wait $CF_PID 2>/dev/null
+    sleep 5
+done
+echo "[cf] ERROR: 3回試行しても URL 取得できず"
+CFEOF
+chmod +x /tmp/cf_start.sh
+nohup /tmp/cf_start.sh "$CF" "${NOTION_TOKEN:-}" "${NOTION_URL_PAGE_ID:-}" \
+    >> /notebooks/startup.log 2>&1 &
 
 # ── 7. WebUI 起動（バックグラウンド・PID を保持） ─────────────────────────────
 cd "$WEBUI"
@@ -122,13 +153,13 @@ nohup "$VENV/bin/python" launch.py \
 WEBUI_PID=$!
 echo "WebUI PID: $WEBUI_PID"
 
-# ── 8. Notion ワーカー起動（.env が読み込まれていれば） ─────────────────────
-if [ -n "${NOTION_TOKEN:-}" ] && [ -f /notebooks/auto_gen_worker.py ]; then
-    nohup "$VENV/bin/python" /notebooks/auto_gen_worker.py \
+# ── 8. 自動生成ワーカー起動 ──────────────────────────────────────────────────
+if [ -f /notebooks/auto_gen_worker.py ]; then
+    nohup "$VENV/bin/python" -u /notebooks/auto_gen_worker.py \
         > /notebooks/worker.log 2>&1 &
-    echo "Notion worker PID: $!"
+    echo "worker PID: $!"
 else
-    echo "INFO: NOTION_TOKEN 未設定 or auto_gen_worker.py 未配置。ワーカー起動をスキップ。"
+    echo "WARN: /notebooks/auto_gen_worker.py が見つかりません"
 fi
 
 echo "===== startup.sh done: $(date) ====="
