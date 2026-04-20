@@ -160,41 +160,34 @@ MACHINE_TYPE = os.environ.get("PAPERSPACE_MACHINE_TYPE", "Free-A4000")
 def _start_notebook():
     errors = []
 
-    nb = notebook_info()
-    project_id = nb.get("projectId", "")
-
-    # 手段1: 旧 paperspace.io API（Cancelled/Stopped 後の再起動に有効）
+    # 手段1: Gradient Python SDK（最も公式な方法）
     try:
-        r = requests.post(
-            f"https://api.paperspace.io/notebooks/{NOTEBOOK_ID}/start",
-            headers={"x-api-key": API_KEY, "Content-Type": "application/json"},
-            json={"machineType": MACHINE_TYPE},
-            timeout=30,
-        )
-        r.raise_for_status()
-        print(f"  ✓ paperspace.io /start 成功 (machineType={MACHINE_TYPE})")
-        return
-    except Exception as e:
-        errors.append(f"paperspace.io /start: {e}")
+        from gradient import NotebooksClient
+        client = NotebooksClient(api_key=API_KEY)
+        for nb_id in dict.fromkeys([NOTEBOOK_REPO_ID, NOTEBOOK_ID]):  # 重複除去・順序保持
+            try:
+                client.start(id=nb_id)
+                print(f"  ✓ gradient SDK start 成功 (id={nb_id})")
+                return
+            except Exception as e:
+                errors.append(f"gradient SDK (id={nb_id}): {e}")
+    except ImportError as e:
+        errors.append(f"gradient import: {e}")
 
-    # 手段2: v1 /start エンドポイント
-    try:
-        paperspace(f"/notebooks/{NOTEBOOK_ID}/start", method="POST",
-                   json={"machineType": MACHINE_TYPE})
-        print(f"  ✓ POST v1/start 成功 (machineType={MACHINE_TYPE})")
-        return
-    except Exception as e:
-        errors.append(f"v1/start: {e}")
-
-    # 手段3: project スコープ付き /start
-    if project_id:
+    # 手段2: paperspace.io /start（repoId / internal id 両方試す）
+    for nb_id in dict.fromkeys([NOTEBOOK_REPO_ID, NOTEBOOK_ID]):
         try:
-            paperspace(f"/projects/{project_id}/notebooks/{NOTEBOOK_ID}/start", method="POST",
-                       json={"machineType": MACHINE_TYPE})
-            print(f"  ✓ POST /projects/{project_id}/start 成功")
+            r = requests.post(
+                f"https://api.paperspace.io/notebooks/{nb_id}/start",
+                headers={"x-api-key": API_KEY, "Content-Type": "application/json"},
+                json={"machineType": MACHINE_TYPE},
+                timeout=30,
+            )
+            r.raise_for_status()
+            print(f"  ✓ paperspace.io /start 成功 (id={nb_id}, machineType={MACHINE_TYPE})")
             return
         except Exception as e:
-            errors.append(f"/projects/.../start: {e}")
+            errors.append(f"paperspace.io /start (id={nb_id}): {e}")
 
     print(f"  WARN: 全手段失敗。手動での再起動が必要です: {errors}")
     sys.exit(1)
