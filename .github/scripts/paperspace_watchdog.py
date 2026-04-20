@@ -166,7 +166,11 @@ def _start_notebook():
         r = requests.post(
             "https://api.paperspace.io/notebooks/v2/startNotebook",
             headers={"x-api-key": API_KEY, "Content-Type": "application/json"},
-            json={"notebookId": NOTEBOOK_ID, "machineType": MACHINE_TYPE},
+            json={
+                "notebookId": NOTEBOOK_ID,
+                "machineType": MACHINE_TYPE,
+                "command": "bash /notebooks/startup.sh",
+            },
             timeout=30,
         )
         print(f"  startNotebook response: {r.status_code} {r.text[:200]}")
