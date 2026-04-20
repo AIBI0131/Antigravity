@@ -25,13 +25,13 @@ if [ "$RCLONE_AVAILABLE" = true ]; then
     rclone copyto gdrive:Antigravity/paperspace.env /notebooks/.env 2>/dev/null || true
 fi
 if [ -f /notebooks/.env ]; then
-    set -a
-    # shellcheck source=/dev/null
-    source /notebooks/.env
-    set +a
+    NOTION_TOKEN=$(grep -E '^NOTION_TOKEN=' /notebooks/.env | cut -d= -f2- | tr -d '\r')
+    NOTION_URL_PAGE_ID=$(grep -E '^NOTION_URL_PAGE_ID=' /notebooks/.env | cut -d= -f2- | tr -d '\r')
+    GRAVITY_SECRET=$(grep -E '^GRAVITY_SECRET=' /notebooks/.env | cut -d= -f2- | tr -d '\r')
+    export GRAVITY_SECRET
     echo "✅ .env 読み込み完了"
 else
-    echo "INFO: .env なし（Notion ワーカーは起動しません）"
+    echo "INFO: .env なし"
 fi
 
 # ── 3. セットアップ（.READY なければ初回構築・冪等） ─────────────────────────
@@ -93,6 +93,7 @@ cat > /tmp/cf_start.sh << 'CFEOF'
 CF_BIN="$1"
 NOTION_TOKEN="$2"
 NOTION_URL_PAGE_ID="$3"
+VENV_PY="$4"
 
 for attempt in 1 2 3; do
     echo "[cf] 試行 $attempt/3 ($(date))"
@@ -114,14 +115,16 @@ for attempt in 1 2 3; do
         echo "[cf] ✅ URL 取得: $URL"
 
         if [ -n "$NOTION_TOKEN" ] && [ -n "$NOTION_URL_PAGE_ID" ]; then
-            curl -s -X PATCH "https://api.notion.com/v1/pages/$NOTION_URL_PAGE_ID" \
-                -H "Authorization: Bearer $NOTION_TOKEN" \
-                -H "Notion-Version: 2022-06-28" \
-                -H "Content-Type: application/json" \
-                -d "{\"properties\":{\"title\":{\"title\":[{\"text\":{\"content\":\"$URL\"}}]}}}" \
-                > /dev/null \
-                && echo "[cf] ✅ Notion URL 更新済" \
-                || echo "[cf] WARN: Notion 更新失敗"
+            "$VENV_PY" - "$URL" "$NOTION_TOKEN" "$NOTION_URL_PAGE_ID" << 'PYEOF' \
+                && echo "[cf] ✅ Notion URL 更新済" || echo "[cf] WARN: Notion 更新失敗"
+import sys, json
+from urllib.request import Request, urlopen
+url, token, page_id = sys.argv[1], sys.argv[2], sys.argv[3]
+data = json.dumps({"properties":{"title":{"title":[{"text":{"content":url}}]}}}).encode()
+req = Request(f"https://api.notion.com/v1/pages/{page_id}", data=data, method="PATCH",
+              headers={"Authorization":f"Bearer {token}","Notion-Version":"2022-06-28","Content-Type":"application/json"})
+urlopen(req)
+PYEOF
         fi
 
         wait $CF_PID
@@ -135,7 +138,7 @@ done
 echo "[cf] ERROR: 3回試行しても URL 取得できず"
 CFEOF
 chmod +x /tmp/cf_start.sh
-nohup /tmp/cf_start.sh "$CF" "${NOTION_TOKEN:-}" "${NOTION_URL_PAGE_ID:-}" \
+nohup /tmp/cf_start.sh "$CF" "${NOTION_TOKEN:-}" "${NOTION_URL_PAGE_ID:-}" "$VENV/bin/python" \
     >> /notebooks/startup.log 2>&1 &
 
 # ── 7. WebUI 起動（バックグラウンド・PID を保持） ─────────────────────────────

@@ -23,8 +23,15 @@ if _env_file.exists():
 
 NOTION_TOKEN = os.environ.get("NOTION_TOKEN")
 NOTION_URL_PAGE_ID = os.environ.get("NOTION_URL_PAGE_ID")
+GRAVITY_SECRET = os.environ.get("GRAVITY_SECRET", "")
 SD_URL_PATH = Path(__file__).parent.parent / "sd_url.json"
 LOCAL_OUTPUT = Path(__file__).parent / "output" / "raw"
+
+
+def _auth_headers() -> dict:
+    if GRAVITY_SECRET:
+        return {"Authorization": f"Bearer {GRAVITY_SECRET}"}
+    return {}
 
 
 def get_url_from_notion() -> str | None:
@@ -66,7 +73,8 @@ def get_base_url() -> str:
 
 
 def sync_once(base_url: str) -> int:
-    resp = requests.get(f"{base_url}/gravity/list_outputs", timeout=15)
+    headers = _auth_headers()
+    resp = requests.get(f"{base_url}/gravity/list_outputs", headers=headers, timeout=15)
     resp.raise_for_status()
     files = resp.json().get("files", [])
     if not files:
@@ -77,14 +85,17 @@ def sync_once(base_url: str) -> int:
     downloaded = 0
     for f in files:
         path = f["path"]
-        local_path = LOCAL_OUTPUT / Path(path).name
+        # サブディレクトリ名をプレフィックスに付けてファイル名衝突を防ぐ
+        parts = Path(path).parts
+        prefix = "_".join(parts[:-1]) + "_" if len(parts) > 1 else ""
+        local_path = LOCAL_OUTPUT / (prefix + parts[-1])
         if local_path.exists():
             continue
         try:
-            dl = requests.get(f"{base_url}/gravity/download/{path}", timeout=60)
+            dl = requests.get(f"{base_url}/gravity/download/{path}", headers=headers, timeout=60)
             dl.raise_for_status()
             local_path.write_bytes(dl.content)
-            requests.delete(f"{base_url}/gravity/delete/{path}", timeout=15)
+            requests.delete(f"{base_url}/gravity/delete/{path}", headers=headers, timeout=15)
             print(f"  ✅ {path} → {local_path.name} (削除済み)")
             downloaded += 1
         except Exception as e:
