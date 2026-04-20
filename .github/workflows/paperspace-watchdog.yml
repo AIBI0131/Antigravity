@@ -20,7 +20,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install requests google-api-python-client google-auth gradient
+        run: pip install requests google-api-python-client google-auth "gradient<3.0"
 
       - name: Run watchdog
         env:

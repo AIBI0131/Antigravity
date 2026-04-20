@@ -160,36 +160,48 @@ MACHINE_TYPE = os.environ.get("PAPERSPACE_MACHINE_TYPE", "Free-A4000")
 def _start_notebook():
     errors = []
 
-    # 手段1: Gradient Python SDK（最も公式な方法）
+    # 手段1: 正しい startNotebook エンドポイント（gradient-cli 内部実装と同じ URL）
+    # curl で 200 OK 確認済み（2026-04-21）
     try:
-        from gradient import NotebooksClient
-        client = NotebooksClient(api_key=API_KEY)
-        for nb_id in dict.fromkeys([NOTEBOOK_REPO_ID, NOTEBOOK_ID]):  # 重複除去・順序保持
-            try:
-                client.start(id=nb_id)
-                print(f"  ✓ gradient SDK start 成功 (id={nb_id})")
-                return
-            except Exception as e:
-                errors.append(f"gradient SDK (id={nb_id}): {e}")
-    except ImportError as e:
-        errors.append(f"gradient import: {e}")
+        r = requests.post(
+            "https://api.paperspace.io/notebooks/v2/startNotebook",
+            headers={"x-api-key": API_KEY, "Content-Type": "application/json"},
+            json={"notebookId": NOTEBOOK_ID, "machineType": MACHINE_TYPE},
+            timeout=30,
+        )
+        print(f"  startNotebook response: {r.status_code} {r.text[:200]}")
+        r.raise_for_status()
+        print(f"  ✓ startNotebook 成功 (id={NOTEBOOK_ID}, machineType={MACHINE_TYPE})")
+        return
+    except Exception as e:
+        errors.append(f"startNotebook (internal id): {e}")
 
-    # 手段2: paperspace.io /start（repoId / internal id 両方試す）
-    for nb_id in dict.fromkeys([NOTEBOOK_REPO_ID, NOTEBOOK_ID]):
+    # 手段2: repoId で再試行
+    if NOTEBOOK_REPO_ID != NOTEBOOK_ID:
         try:
             r = requests.post(
-                f"https://api.paperspace.io/notebooks/{nb_id}/start",
+                "https://api.paperspace.io/notebooks/v2/startNotebook",
                 headers={"x-api-key": API_KEY, "Content-Type": "application/json"},
-                json={"machineType": MACHINE_TYPE},
+                json={"notebookId": NOTEBOOK_REPO_ID, "machineType": MACHINE_TYPE},
                 timeout=30,
             )
+            print(f"  startNotebook (repoId) response: {r.status_code} {r.text[:200]}")
             r.raise_for_status()
-            print(f"  ✓ paperspace.io /start 成功 (id={nb_id}, machineType={MACHINE_TYPE})")
+            print(f"  ✓ startNotebook 成功 (repoId={NOTEBOOK_REPO_ID})")
             return
         except Exception as e:
-            errors.append(f"paperspace.io /start (id={nb_id}): {e}")
+            errors.append(f"startNotebook (repoId): {e}")
 
-    print(f"  WARN: 全手段失敗。手動での再起動が必要です: {errors}")
+    # 手段3: gradient Python SDK v2
+    try:
+        from gradient.api_sdk.clients.notebook_client import NotebooksClient
+        NotebooksClient(api_key=API_KEY).start(id=NOTEBOOK_ID, machine_type=MACHINE_TYPE)
+        print(f"  ✓ gradient SDK 成功")
+        return
+    except Exception as e:
+        errors.append(f"gradient SDK: {e}")
+
+    print(f"  WARN: 全手段失敗: {errors}")
     sys.exit(1)
 
 
