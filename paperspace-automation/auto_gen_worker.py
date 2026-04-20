@@ -1,49 +1,146 @@
 """
-Notion キューをポーリングして WebUI に txt2img リクエストを投げ、
-結果を Google Drive へ保存し Notion レコードを更新する。
+Queue-file ベースの自動生成ワーカー。
 
-環境変数 (startup.sh で /notebooks/.env から source される):
-  NOTION_TOKEN          — Notion Internal Integration トークン
-  NOTION_QUEUE_DB_ID    — 生成キューの Notion Database ID
+/notebooks/queue.txt の各行を順に WebUI API に投げ、
+/notebooks/checkpoint.json で進捗を保存する。
+再起動後は checkpoint の次の行から再開する。
+
+queue.txt フォーマット（workflow-gravity の prompts.txt と同じ形式）:
+  --prompt "..." --batch_size 2 --ad_steps 40 --outpath_samples "outputs/..." --negative_prompt "..." --ad_prompt "..."
+  # で始まる行と空行はスキップ
+
+共通パラメータは /notebooks/queue_config.json で上書き可能（省略時はデフォルト値を使用）。
 """
 
-import base64
 import json
-import os
-import subprocess
+import re
+import shlex
 import sys
 import time
-from datetime import datetime, timezone
+from pathlib import Path
 
 import requests
 
-NOTION_TOKEN = os.environ.get("NOTION_TOKEN")
-DB_ID = os.environ.get("NOTION_QUEUE_DB_ID")
 WEBUI_API = "http://127.0.0.1:7860"
-OUT_DIR = "/storage/generated"
-POLL_SEC = 30
+QUEUE_FILE = Path("/notebooks/queue.txt")
+CHECKPOINT_FILE = Path("/notebooks/checkpoint.json")
+CONFIG_FILE = Path("/notebooks/queue_config.json")
+WEBUI_ROOT = Path("/notebooks/stable-diffusion-webui")
 
-if not NOTION_TOKEN or not DB_ID:
-    print("FATAL: NOTION_TOKEN / NOTION_QUEUE_DB_ID が未設定です。", file=sys.stderr)
-    sys.exit(1)
-
-try:
-    from notion_client import Client
-    from notion_client.errors import APIResponseError
-except ImportError:
-    print("FATAL: notion-client 未インストール。venv に pip install notion-client してください。", file=sys.stderr)
-    sys.exit(1)
-
-notion = Client(auth=NOTION_TOKEN)
-os.makedirs(OUT_DIR, exist_ok=True)
+DEFAULT_CONFIG = {
+    "steps": 28,
+    "cfg_scale": 7.0,
+    "width": 832,
+    "height": 1216,
+    "sampler_name": "DPM++ 2M",
+    "scheduler": "Karras",
+    "seed": -1,
+}
 
 
-# ---------------------------------------------------------------------------
-# ユーティリティ
-# ---------------------------------------------------------------------------
+def load_config() -> dict:
+    cfg = dict(DEFAULT_CONFIG)
+    if CONFIG_FILE.exists():
+        try:
+            cfg.update(json.loads(CONFIG_FILE.read_text(encoding="utf-8")))
+            print(f"✅ queue_config.json 読み込み: {cfg}")
+        except Exception as e:
+            print(f"[WARN] queue_config.json 読み込み失敗: {e}")
+    return cfg
+
+
+def load_queue() -> list:
+    if not QUEUE_FILE.exists():
+        raise FileNotFoundError(f"{QUEUE_FILE} が見つかりません。Paperspace にアップロードしてください。")
+    lines = []
+    for line in QUEUE_FILE.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            lines.append(line)
+    print(f"✅ queue.txt 読み込み: {len(lines)} 件")
+    return lines
+
+
+def load_checkpoint() -> int:
+    if CHECKPOINT_FILE.exists():
+        try:
+            return int(json.loads(CHECKPOINT_FILE.read_text()).get("last_done", -1))
+        except Exception:
+            pass
+    return -1
+
+
+def save_checkpoint(index: int):
+    CHECKPOINT_FILE.write_text(json.dumps({"last_done": index}))
+
+
+def parse_prompt_line(line: str) -> dict:
+    """--prompt "..." --key value 形式を辞書にパース。"""
+    if "--prompt" not in line and "--negative_prompt" not in line:
+        return {"prompt": line}
+    try:
+        args = shlex.split(line)
+        parsed = {}
+        current_key = None
+        for token in args:
+            if token.startswith("--"):
+                current_key = token.lstrip("-")
+            elif current_key:
+                parsed[current_key] = token
+                current_key = None
+        return parsed
+    except Exception as e:
+        print(f"[WARN] パース失敗: {e} → 生の文字列として扱います")
+        return {"prompt": line}
+
+
+def build_payload(parsed: dict, cfg: dict) -> dict:
+    payload = dict(cfg)
+
+    payload["prompt"] = re.sub(r"\s+", " ", parsed.get("prompt", "")).strip()
+
+    if "negative_prompt" in parsed:
+        payload["negative_prompt"] = re.sub(r"\s+", " ", parsed["negative_prompt"]).strip()
+
+    if "batch_size" in parsed:
+        try:
+            payload["batch_size"] = int(parsed["batch_size"])
+        except ValueError:
+            print(f"[WARN] batch_size 無効: {parsed['batch_size']}")
+
+    payload["save_images"] = True
+
+    # --outpath_samples → WebUI の保存先を override
+    if "outpath_samples" in parsed:
+        out = parsed["outpath_samples"].strip().strip("\"'")
+        if not Path(out).is_absolute():
+            out = str(WEBUI_ROOT / out)
+        payload["override_settings"] = {"outdir_txt2img_samples": out}
+        payload["override_settings_restore_afterwards"] = True
+
+    # ADetailer（--ad_prompt / --ad_steps）
+    ad_prompt = parsed.get("ad_prompt")
+    ad_steps = parsed.get("ad_steps")
+    if ad_prompt or ad_steps:
+        ad_arg = {"ad_model": "face_yolov8n.pt"}
+        if ad_prompt:
+            ad_arg["ad_prompt"] = ad_prompt.strip().strip("\"'")
+        if ad_steps:
+            try:
+                ad_arg["ad_steps"] = int(ad_steps)
+                ad_arg["ad_use_steps"] = True
+            except ValueError:
+                print(f"[WARN] ad_steps 無効: {ad_steps}")
+        payload["alwayson_scripts"] = {
+            "ADetailer": {"args": [True, False, ad_arg]}
+        }
+
+    return payload
+
 
 def wait_webui(timeout: int = 600):
-    """WebUI が /sdapi/v1/sd-models に応答するまで待つ（最大 timeout 秒）。"""
+    """WebUI が応答するまで待機（最大 timeout 秒）。"""
+    print("WebUI の起動を待機中...")
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
@@ -54,166 +151,52 @@ def wait_webui(timeout: int = 600):
         except Exception:
             pass
         time.sleep(10)
-    raise RuntimeError(f"WebUI が {timeout}秒 経っても応答しません。")
+    raise RuntimeError(f"WebUI が {timeout}秒経っても応答しません")
 
 
-def update_notion(page_id: str, **props):
-    notion.pages.update(page_id=page_id, properties=props)
-
-
-def get_text(prop) -> str:
-    rt = prop.get("rich_text", [])
-    return rt[0]["plain_text"] if rt else ""
-
-
-def get_number(prop, default=None):
-    return prop.get("number") if prop.get("number") is not None else default
-
-
-def get_select(prop, default=None) -> str:
-    sel = prop.get("select")
-    return sel["name"] if sel else default
-
-
-def fetch_pending():
-    """FIFO (created_time 昇順) で pending を1件取得。"""
-    res = notion.databases.query(
-        database_id=DB_ID,
-        filter={"property": "Status", "select": {"equals": "pending"}},
-        sorts=[{"timestamp": "created_time", "direction": "ascending"}],
-        page_size=1,
-    )
-    results = res.get("results", [])
-    return results[0] if results else None
-
-
-def rclone_upload(local_path: str, remote_path: str) -> str:
-    """rclone で Drive にアップロードし共有リンクを返す。"""
-    subprocess.run(
-        ["rclone", "copyto", local_path, remote_path],
-        check=True,
-        timeout=120,
-    )
-    result = subprocess.run(
-        ["rclone", "link", remote_path],
-        capture_output=True,
-        text=True,
-        check=True,
-        timeout=30,
-    )
-    return result.stdout.strip()
-
-
-# ---------------------------------------------------------------------------
-# メイン処理
-# ---------------------------------------------------------------------------
-
-def run_one(page: dict):
-    pid = page["id"]
-    p = page["properties"]
-
-    prompt = get_text(p.get("Prompt", {}))
-    if not prompt.strip():
-        update_notion(
-            pid,
-            Status={"select": {"name": "failed"}},
-            Error={"rich_text": [{"text": {"content": "Prompt が空です。"}}]},
-        )
-        print(f"[{pid[-6:]}] SKIP: Prompt 空")
-        return
-
-    negative = get_text(p.get("Negative", {}))
-    steps    = int(get_number(p.get("Steps", {}), 25))
-    cfg      = float(get_number(p.get("CFG", {}), 7.0))
-    w        = int(get_number(p.get("Width", {}), 512))
-    h        = int(get_number(p.get("Height", {}), 768))
-    sampler  = get_select(p.get("Sampler", {}), "DPM++ 2M Karras")
-    seed     = int(get_number(p.get("Seed", {}), -1))
-
-    print(f"[{pid[-6:]}] 生成開始: {prompt[:60]}...")
-    update_notion(pid, Status={"select": {"name": "running"}})
-
+def generate(payload: dict, index: int) -> bool:
     try:
-        r = requests.post(
-            f"{WEBUI_API}/sdapi/v1/txt2img",
-            timeout=600,
-            json={
-                "prompt": prompt,
-                "negative_prompt": negative,
-                "steps": steps,
-                "cfg_scale": cfg,
-                "width": w,
-                "height": h,
-                "sampler_name": sampler,
-                "seed": seed,
-            },
-        )
+        r = requests.post(f"{WEBUI_API}/sdapi/v1/txt2img", json=payload, timeout=600)
         r.raise_for_status()
-        body = r.json()
-
-        img_b64 = body["images"][0]
-
-        # レスポンスの info から実際の seed を取得
-        info = {}
-        try:
-            info = json.loads(body.get("info", "{}"))
-        except Exception:
-            pass
-        used_seed = info.get("seed", seed)
-
-        # ファイル名に seed を含める（上書き衝突防止）
-        ts = datetime.now(tz=timezone.utc).strftime("%Y%m%d-%H%M%S")
-        fname = f"{ts}_{pid[-6:]}_s{used_seed}.png"
-        local = os.path.join(OUT_DIR, fname)
-
-        with open(local, "wb") as f:
-            f.write(base64.b64decode(img_b64))
-        print(f"  保存: {local}")
-
-        remote = f"gdrive:Antigravity/generated/{fname}"
-        link = rclone_upload(local, remote)
-        print(f"  Drive: {link}")
-
-        update_notion(
-            pid,
-            Status={"select": {"name": "done"}},
-            **{"Result URL": {"url": link}},
-        )
-        print(f"[{pid[-6:]}] 完了")
-
+        return True
     except Exception as e:
-        err_msg = str(e)[:1800]
-        print(f"[{pid[-6:]}] ERROR: {err_msg}", file=sys.stderr)
-        update_notion(
-            pid,
-            Status={"select": {"name": "failed"}},
-            Error={"rich_text": [{"text": {"content": err_msg}}]},
-        )
+        print(f"  [{index}] ERROR: {e}")
+        return False
 
 
 def main():
     print("=== auto_gen_worker 起動 ===")
     wait_webui()
 
-    while True:
-        try:
-            page = fetch_pending()
-            if page:
-                run_one(page)
-            else:
-                time.sleep(POLL_SEC)
-        except APIResponseError as e:
-            # Notion API レート超過の場合は exponential backoff
-            if e.status == 429:
-                wait = 60
-                print(f"Notion 429 — {wait}s 待機")
-                time.sleep(wait)
-            else:
-                print(f"Notion API エラー: {e}", file=sys.stderr)
-                time.sleep(POLL_SEC)
-        except Exception as e:
-            print(f"予期しないエラー: {e}", file=sys.stderr)
-            time.sleep(POLL_SEC)
+    cfg = load_config()
+    queue = load_queue()
+    last_done = load_checkpoint()
+    start_from = last_done + 1
+
+    total = len(queue)
+    remaining = total - start_from
+    print(f"全 {total} 件 / 開始: {start_from} 番目（残り {remaining} 件）")
+
+    if start_from >= total:
+        print("全プロンプト処理済みです。queue.txt を更新してください。")
+        sys.exit(0)
+
+    for i in range(start_from, total):
+        line = queue[i]
+        parsed = parse_prompt_line(line)
+        payload = build_payload(parsed, cfg)
+
+        preview = parsed.get("prompt", "")[:60]
+        print(f"[{i}/{total-1}] {preview}...")
+
+        ok = generate(payload, i)
+        if ok:
+            save_checkpoint(i)
+            print(f"  [{i}] ✅ 完了 (checkpoint 保存)")
+        else:
+            print(f"  [{i}] ❌ 失敗 → スキップして続行")
+
+    print("=== 全プロンプト完了 ===")
 
 
 if __name__ == "__main__":
