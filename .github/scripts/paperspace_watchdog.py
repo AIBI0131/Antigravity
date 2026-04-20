@@ -158,22 +158,35 @@ MACHINE_TYPE = os.environ.get("PAPERSPACE_MACHINE_TYPE", "Free-A4000")
 
 
 def _start_notebook():
-    import subprocess
     errors = []
 
     nb = notebook_info()
     project_id = nb.get("projectId", "")
 
-    # 手段1: /start エンドポイント (v1 直接)
+    # 手段1: 旧 paperspace.io API（Cancelled/Stopped 後の再起動に有効）
+    try:
+        r = requests.post(
+            f"https://api.paperspace.io/notebooks/{NOTEBOOK_ID}/start",
+            headers={"x-api-key": API_KEY, "Content-Type": "application/json"},
+            json={"machineType": MACHINE_TYPE},
+            timeout=30,
+        )
+        r.raise_for_status()
+        print(f"  ✓ paperspace.io /start 成功 (machineType={MACHINE_TYPE})")
+        return
+    except Exception as e:
+        errors.append(f"paperspace.io /start: {e}")
+
+    # 手段2: v1 /start エンドポイント
     try:
         paperspace(f"/notebooks/{NOTEBOOK_ID}/start", method="POST",
                    json={"machineType": MACHINE_TYPE})
-        print(f"  ✓ POST /start 成功 (machineType={MACHINE_TYPE})")
+        print(f"  ✓ POST v1/start 成功 (machineType={MACHINE_TYPE})")
         return
     except Exception as e:
-        errors.append(f"/start: {e}")
+        errors.append(f"v1/start: {e}")
 
-    # 手段2: project スコープ付き /start
+    # 手段3: project スコープ付き /start
     if project_id:
         try:
             paperspace(f"/projects/{project_id}/notebooks/{NOTEBOOK_ID}/start", method="POST",
@@ -182,30 +195,6 @@ def _start_notebook():
             return
         except Exception as e:
             errors.append(f"/projects/.../start: {e}")
-
-    # 手段3: PATCH で state を Running に変更
-    try:
-        paperspace(f"/notebooks/{NOTEBOOK_ID}", method="PATCH",
-                   json={"state": "Running"})
-        print("  ✓ PATCH state=Running 成功")
-        return
-    except Exception as e:
-        errors.append(f"PATCH state: {e}")
-
-    # 手段4: gradient CLI (subprocess)
-    try:
-        result = subprocess.run(
-            ["gradient", "notebooks", "start", "--id", NOTEBOOK_ID],
-            capture_output=True, text=True,
-            env={**os.environ, "PAPERSPACE_API_KEY": API_KEY},
-            timeout=60,
-        )
-        if result.returncode == 0:
-            print(f"  ✓ gradient CLI 成功: {result.stdout.strip()}")
-            return
-        errors.append(f"gradient CLI (rc={result.returncode}): {result.stderr.strip()}")
-    except Exception as e:
-        errors.append(f"gradient CLI: {e}")
 
     print(f"  WARN: 全手段失敗。手動での再起動が必要です: {errors}")
     sys.exit(1)
