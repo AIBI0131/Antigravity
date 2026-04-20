@@ -154,6 +154,9 @@ def read_sd_url_age() -> float:
 # Notebook 起動（複数手段を順に試みる）
 # ---------------------------------------------------------------------------
 
+MACHINE_TYPE = os.environ.get("PAPERSPACE_MACHINE_TYPE", "Free-A4000")
+
+
 def _start_notebook():
     import subprocess
     errors = []
@@ -163,8 +166,9 @@ def _start_notebook():
 
     # 手段1: /start エンドポイント (v1 直接)
     try:
-        paperspace(f"/notebooks/{NOTEBOOK_ID}/start", method="POST")
-        print("  ✓ POST /start 成功")
+        paperspace(f"/notebooks/{NOTEBOOK_ID}/start", method="POST",
+                   json={"machineType": MACHINE_TYPE})
+        print(f"  ✓ POST /start 成功 (machineType={MACHINE_TYPE})")
         return
     except Exception as e:
         errors.append(f"/start: {e}")
@@ -172,7 +176,8 @@ def _start_notebook():
     # 手段2: project スコープ付き /start
     if project_id:
         try:
-            paperspace(f"/projects/{project_id}/notebooks/{NOTEBOOK_ID}/start", method="POST")
+            paperspace(f"/projects/{project_id}/notebooks/{NOTEBOOK_ID}/start", method="POST",
+                       json={"machineType": MACHINE_TYPE})
             print(f"  ✓ POST /projects/{project_id}/start 成功")
             return
         except Exception as e:
