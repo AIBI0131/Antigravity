@@ -29,6 +29,7 @@ if [ -f /notebooks/.env ]; then
     NOTION_URL_PAGE_ID=$(grep -E '^NOTION_URL_PAGE_ID=' /notebooks/.env | cut -d= -f2- | tr -d '\r')
     GRAVITY_SECRET=$(grep -E '^GRAVITY_SECRET=' /notebooks/.env | cut -d= -f2- | tr -d '\r')
     export GRAVITY_SECRET
+    export IPYTHONDIR=/notebooks/.ipython
     echo "✅ .env 読み込み完了"
 else
     echo "INFO: .env なし"
