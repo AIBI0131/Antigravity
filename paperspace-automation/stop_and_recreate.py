@@ -26,7 +26,7 @@ if os.path.exists(cfg_path):
     with open(cfg_path, encoding="utf-8") as f:
         legacy_config = json.load(f)
 
-OLD_ID     = legacy_config.get("id", os.environ.get("PAPERSPACE_NOTEBOOK_ID", ""))
+OLD_ID     = legacy_config.get("id", os.environ.get("PAPERSPACE_NOTEBOOK_ID", "ncn5vjxzti"))
 PROJECT_ID = "p6rny5vxgj7"  # Uncategorized Notebooks (previous creation succeeded here)
 CLUSTER_ID = "clg07azjl"
 MACHINE    = legacy_config.get("machineType", "Free-A4000")
@@ -114,7 +114,6 @@ for machine in MACHINE_ORDER:
         "machineType": machine,
         "clusterId": CLUSTER_ID,
         "container": CONTAINER,
-        "command": ["bash", "-c", COMMAND],
         "name": "automation-webui",
         "isPreemptible": False,
         "shutdownTimeout": 6,
