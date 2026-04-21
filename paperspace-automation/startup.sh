@@ -1,41 +1,35 @@
 #!/bin/bash
 # Paperspace Notebook 自動起動スクリプト
-# Notebook Settings → Command: bash /notebooks/startup.sh
+# Notebook Command: bash /storage/paperspace-automation/startup.sh
 set -uo pipefail
 exec > >(tee -a /notebooks/startup.log) 2>&1
 echo "===== startup.sh begin: $(date) ====="
 
-VENV=/notebooks/venv310
-WEBUI=/notebooks/stable-diffusion-webui
-CF=/notebooks/cloudflared
+# ── パス定数 ──────────────────────────────────────────────────────────────────
+VENV=/notebooks/venv310                           # 各 Notebook 固有（再構築可）
+WEBUI=/notebooks/stable-diffusion-webui           # 同上
+CF=/notebooks/cloudflared                         # 同上
 READY="$VENV/.READY"
 
-# ── 1. rclone.conf チェック（任意・なくても動作する） ────────────────────────
-export RCLONE_CONFIG=/notebooks/rclone.conf
-RCLONE_AVAILABLE=false
-if [ -f "$RCLONE_CONFIG" ] && command -v rclone &>/dev/null; then
-    RCLONE_AVAILABLE=true
-    echo "✅ rclone 利用可能"
-else
-    echo "INFO: rclone 未設定 — Drive 同期をスキップ（WebUI は起動します）"
-fi
+STORAGE=/storage/paperspace-automation            # 共有永続領域
+ENV_FILE="$STORAGE/.env"
+API_TEMPLATE="$STORAGE/api_gravity_template.py"
+WORKER="$STORAGE/auto_gen_worker.py"
 
-# ── 2. .env（Notion トークン等）を Drive から取得して読み込み ─────────────────
-if [ "$RCLONE_AVAILABLE" = true ]; then
-    rclone copyto gdrive:Antigravity/paperspace.env /notebooks/.env 2>/dev/null || true
-fi
-if [ -f /notebooks/.env ]; then
-    NOTION_TOKEN=$(grep -E '^NOTION_TOKEN=' /notebooks/.env | cut -d= -f2- | tr -d '\r')
-    NOTION_URL_PAGE_ID=$(grep -E '^NOTION_URL_PAGE_ID=' /notebooks/.env | cut -d= -f2- | tr -d '\r')
-    GRAVITY_SECRET=$(grep -E '^GRAVITY_SECRET=' /notebooks/.env | cut -d= -f2- | tr -d '\r')
+# ── 1. .env（Notion トークン等）を /storage/ から読み込み ─────────────────────
+if [ -f "$ENV_FILE" ]; then
+    NOTION_TOKEN=$(grep -E '^NOTION_TOKEN=' "$ENV_FILE" | cut -d= -f2- | tr -d '\r')
+    NOTION_URL_PAGE_ID=$(grep -E '^NOTION_URL_PAGE_ID=' "$ENV_FILE" | cut -d= -f2- | tr -d '\r')
+    GRAVITY_SECRET=$(grep -E '^GRAVITY_SECRET=' "$ENV_FILE" | cut -d= -f2- | tr -d '\r')
     export GRAVITY_SECRET
-    export IPYTHONDIR=/notebooks/.ipython
-    echo "✅ .env 読み込み完了"
+    echo "✅ .env 読み込み完了 ($ENV_FILE)"
 else
-    echo "INFO: .env なし"
+    echo "INFO: $ENV_FILE なし — Notion 通知なしで起動"
+    NOTION_TOKEN=""
+    NOTION_URL_PAGE_ID=""
 fi
 
-# ── 3. セットアップ（.READY なければ初回構築・冪等） ─────────────────────────
+# ── 2. セットアップ（.READY なければ初回構築・冪等） ─────────────────────────
 if [ ! -f "$READY" ]; then
     echo "=== Setup: venv 構築 (初回 10〜15分) ==="
     apt-get update -qq
@@ -72,23 +66,22 @@ else
     echo "✅ cloudflared 既存（スキップ）"
 fi
 
-# ── 4. ゾンビ掃除 ─────────────────────────────────────────────────────────────
+# ── 3. ゾンビ掃除 ─────────────────────────────────────────────────────────────
 pkill -f 'launch.py'           2>/dev/null || true
 pkill -f 'cloudflared tunnel'  2>/dev/null || true
 pkill -f 'auto_gen_worker'     2>/dev/null || true
 sleep 2
 
-# ── 5. api_gravity.py 配置 ────────────────────────────────────────────────────
-TEMPLATE=/notebooks/api_gravity_template.py
-if [ -f "$TEMPLATE" ]; then
+# ── 4. api_gravity.py 配置（/storage/ にあれば使う） ─────────────────────────
+if [ -f "$API_TEMPLATE" ]; then
     mkdir -p "$WEBUI/scripts"
-    cp "$TEMPLATE" "$WEBUI/scripts/api_gravity.py"
+    cp "$API_TEMPLATE" "$WEBUI/scripts/api_gravity.py"
     echo "✅ api_gravity.py 配置"
 else
-    echo "WARN: $TEMPLATE が見つかりません（Gravity API 機能なしで起動）"
+    echo "WARN: $API_TEMPLATE が見つかりません（Gravity API 機能なしで起動）"
 fi
 
-# ── 6. cloudflared トンネル起動（http2・リトライ3回・Notion URL 通知） ──
+# ── 5. cloudflared トンネル起動（http2・リトライ3回・Notion URL 通知） ──
 cat > /tmp/cf_start.sh << 'CFEOF'
 #!/bin/bash
 CF_BIN="$1"
@@ -142,7 +135,7 @@ chmod +x /tmp/cf_start.sh
 nohup /tmp/cf_start.sh "$CF" "${NOTION_TOKEN:-}" "${NOTION_URL_PAGE_ID:-}" "$VENV/bin/python" \
     >> /notebooks/startup.log 2>&1 &
 
-# ── 7. WebUI 起動（バックグラウンド・PID を保持） ─────────────────────────────
+# ── 6. WebUI 起動（バックグラウンド・PID を保持） ─────────────────────────────
 cd "$WEBUI"
 export GRADIO_SERVER_TIMEOUT=300
 export GRADIO_KEEP_ALIVE=True
@@ -157,13 +150,13 @@ nohup "$VENV/bin/python" launch.py \
 WEBUI_PID=$!
 echo "WebUI PID: $WEBUI_PID"
 
-# ── 8. 自動生成ワーカー起動 ──────────────────────────────────────────────────
-if [ -f /notebooks/auto_gen_worker.py ]; then
-    nohup "$VENV/bin/python" -u /notebooks/auto_gen_worker.py \
+# ── 7. 自動生成ワーカー起動 ──────────────────────────────────────────────────
+if [ -f "$WORKER" ]; then
+    nohup "$VENV/bin/python" -u "$WORKER" \
         > /notebooks/worker.log 2>&1 &
     echo "worker PID: $!"
 else
-    echo "WARN: /notebooks/auto_gen_worker.py が見つかりません"
+    echo "WARN: $WORKER が見つかりません"
 fi
 
 echo "===== startup.sh done: $(date) ====="

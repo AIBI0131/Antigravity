@@ -169,7 +169,6 @@ def _start_notebook():
             json={
                 "notebookId": NOTEBOOK_ID,
                 "machineType": MACHINE_TYPE,
-                "command": "bash /notebooks/startup.sh",
             },
             timeout=30,
         )

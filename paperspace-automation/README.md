@@ -57,7 +57,7 @@ Paperspace UI → 対象の Notebook を選択 → **Edit** または **Settings
 | Secret 名 | 内容 |
 |---|---|
 | `PAPERSPACE_API_KEY` | Paperspace コンソール → Account → API Keys |
-| `PAPERSPACE_NOTEBOOK_ID` | Notebook URL の ID 部分 (例: `rdlpoamf83uqqub`) |
+| `PAPERSPACE_NOTEBOOK_ID` | `nlsn3k7ekc`（API で確認済み） |
 | `GDRIVE_SA_JSON` | Google Cloud Service Account の JSON 全文 (Drive read 権限) |
 | `GDRIVE_SD_URL_FILE_ID` | Drive 上の `sd_url.json` の fileId (`/d/<ID>/view` の `<ID>`) |
 
