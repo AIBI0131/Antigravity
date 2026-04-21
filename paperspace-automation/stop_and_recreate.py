@@ -117,6 +117,7 @@ for machine in MACHINE_ORDER:
         "name": "automation-webui",
         "isPreemptible": False,
         "shutdownTimeout": 6,
+        "environment": {"JUPYTER_CONFIG_PATH": "/notebooks"},
     }
     r3 = requests.post(
         "https://api.paperspace.io/notebooks/v2/createNotebook",
