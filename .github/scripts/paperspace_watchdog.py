@@ -155,31 +155,34 @@ def read_sd_url_age() -> float:
 # ---------------------------------------------------------------------------
 
 MACHINE_TYPE = os.environ.get("PAPERSPACE_MACHINE_TYPE", "Free-A4000")
+# 空きがなければ順番に試すフォールバック機種リスト
+MACHINE_FALLBACKS = ["Free-A4000", "Free-RTX4000", "Free-P5000", "Free-RTX5000"]
 
 
 def _start_notebook():
     errors = []
+    machines_to_try = [MACHINE_TYPE] + [m for m in MACHINE_FALLBACKS if m != MACHINE_TYPE]
 
-    # 手段1: 正しい startNotebook エンドポイント（gradient-cli 内部実装と同じ URL）
-    # curl で 200 OK 確認済み（2026-04-21）
-    try:
-        r = requests.post(
-            "https://api.paperspace.io/notebooks/v2/startNotebook",
-            headers={"x-api-key": API_KEY, "Content-Type": "application/json"},
-            json={
-                "notebookId": NOTEBOOK_ID,
-                "machineType": MACHINE_TYPE,
-            },
-            timeout=30,
-        )
-        print(f"  startNotebook response: {r.status_code} {r.text[:200]}")
-        r.raise_for_status()
-        print(f"  ✓ startNotebook 成功 (id={NOTEBOOK_ID}, machineType={MACHINE_TYPE})")
-        return
-    except Exception as e:
-        errors.append(f"startNotebook (internal id): {e}")
+    for machine in machines_to_try:
+        try:
+            r = requests.post(
+                "https://api.paperspace.io/notebooks/v2/startNotebook",
+                headers={"x-api-key": API_KEY, "Content-Type": "application/json"},
+                json={"notebookId": NOTEBOOK_ID, "machineType": machine},
+                timeout=30,
+            )
+            print(f"  startNotebook ({machine}) response: {r.status_code} {r.text[:200]}")
+            if r.status_code == 429:
+                print(f"  {machine} は空きなし → 次の機種を試みます")
+                errors.append(f"{machine}: 429 空きなし")
+                continue
+            r.raise_for_status()
+            print(f"  ✓ startNotebook 成功 (id={NOTEBOOK_ID}, machineType={machine})")
+            return
+        except Exception as e:
+            errors.append(f"{machine}: {e}")
 
-    # 手段2: repoId で再試行
+    # repoId で最終試行
     if NOTEBOOK_REPO_ID != NOTEBOOK_ID:
         try:
             r = requests.post(
@@ -189,20 +192,17 @@ def _start_notebook():
                 timeout=30,
             )
             print(f"  startNotebook (repoId) response: {r.status_code} {r.text[:200]}")
-            r.raise_for_status()
-            print(f"  ✓ startNotebook 成功 (repoId={NOTEBOOK_REPO_ID})")
-            return
+            if r.status_code != 429:
+                r.raise_for_status()
+                print(f"  ✓ startNotebook 成功 (repoId={NOTEBOOK_REPO_ID})")
+                return
         except Exception as e:
-            errors.append(f"startNotebook (repoId): {e}")
+            errors.append(f"repoId: {e}")
 
-    # 手段3: gradient Python SDK v2
-    try:
-        from gradient.api_sdk.clients.notebook_client import NotebooksClient
-        NotebooksClient(api_key=API_KEY).start(id=NOTEBOOK_ID, machine_type=MACHINE_TYPE)
-        print(f"  ✓ gradient SDK 成功")
-        return
-    except Exception as e:
-        errors.append(f"gradient SDK: {e}")
+    # 全機種 429 = 一時的な空きなし → 次回 cron に委ねる（exit 0）
+    if all("429" in str(e) or "空きなし" in str(e) for e in errors):
+        print(f"  INFO: 全機種空きなし。次回の cron で再試行します。")
+        sys.exit(0)
 
     print(f"  WARN: 全手段失敗: {errors}")
     sys.exit(1)
