@@ -32,19 +32,34 @@ fi
 # ── 2. セットアップ（.READY なければ初回構築・冪等） ─────────────────────────
 if [ ! -f "$READY" ]; then
     echo "=== Setup: venv 構築 (初回 10〜15分) ==="
-    apt-get update -qq
-    apt-get install -y -qq python3.10 python3.10-venv python3-pip libpython3.10-dev build-essential ffmpeg
-    python3.10 -m venv --without-pip "$VENV" \
-        || python3.10 -m venv "$VENV" \
+    # python3.10 を優先、なければ python3.11 を使う
+    PY=""
+    for candidate in python3.10 python3.11 python3; do
+        if command -v "$candidate" &>/dev/null; then
+            PY="$candidate"
+            break
+        fi
+    done
+    if [ -z "$PY" ]; then
+        echo "INFO: python3.10 を apt でインストールします..."
+        apt-get update -qq
+        apt-get install -y -qq python3.10 python3.10-venv libpython3.10-dev build-essential ffmpeg
+        PY=python3.10
+    else
+        apt-get update -qq
+        apt-get install -y -qq build-essential ffmpeg || true
+    fi
+    echo "使用 Python: $($PY --version)"
+    "$PY" -m venv --without-pip "$VENV" \
+        || "$PY" -m venv "$VENV" \
         || { echo "FATAL: venv 作成失敗"; exit 1; }
-    curl -sS https://bootstrap.pypa.io/get-pip.py | "$VENV/bin/python3.10"
-    "$VENV/bin/pip" install -U pip setuptools==69.5.1 wheel
+    curl -sS https://bootstrap.pypa.io/get-pip.py | "$VENV/bin/python"
+    "$VENV/bin/pip" install -U pip setuptools wheel
     "$VENV/bin/pip" install \
-        torch==2.1.2 torchvision==0.16.2 torchaudio==2.1.2 \
-        xformers==0.0.23.post1 \
+        torch torchvision torchaudio \
         --index-url https://download.pytorch.org/whl/cu121
     "$VENV/bin/pip" install \
-        httpx==0.24.1 matplotlib ipython pyparsing requests notion-client
+        httpx matplotlib ipython pyparsing requests notion-client xformers
     "$VENV/bin/pip" install --no-build-isolation \
         "https://github.com/openai/CLIP/archive/d50d76daa670286dd6cacf3bcd80b5e4823fc8e1.zip"
     echo "built_at=$(date +%s)" > "$READY"

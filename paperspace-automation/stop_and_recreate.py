@@ -31,7 +31,10 @@ OLD_ID     = legacy_config.get("id", os.environ.get("PAPERSPACE_NOTEBOOK_ID", ""
 PROJECT_ID = legacy_config.get("projectId") or legacy_config.get("projectHandle")
 CLUSTER_ID = "clg07azjl"
 MACHINE    = legacy_config.get("machineType", "Free-A4000")
-COMMAND    = "bash /storage/paperspace-automation/startup.sh"
+COMMAND    = (
+    "curl -fsSL https://raw.githubusercontent.com/AIBI0131/Antigravity/master/"
+    "paperspace-automation/startup.sh -o /tmp/startup.sh && bash /tmp/startup.sh"
+)
 CONTAINER  = os.environ.get("PAPERSPACE_CONTAINER", "paperspace/gradient-base:pt211-tf215-jax0414-py311-20231116")
 
 if not OLD_ID or not PROJECT_ID:

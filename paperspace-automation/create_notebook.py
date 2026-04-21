@@ -26,7 +26,10 @@ if os.path.exists(legacy_path):
 PROJECT_ID = os.environ.get("PAPERSPACE_PROJECT_ID") or legacy_config.get("projectId") or legacy_config.get("projectHandle")
 CLUSTER_ID = os.environ.get("PAPERSPACE_CLUSTER_ID", "clg07azjl")
 MACHINE    = os.environ.get("PAPERSPACE_MACHINE_TYPE", legacy_config.get("machineType", "Free-A4000"))
-COMMAND    = "bash /storage/paperspace-automation/startup.sh"
+COMMAND    = (
+    "curl -fsSL https://raw.githubusercontent.com/AIBI0131/Antigravity/master/"
+    "paperspace-automation/startup.sh -o /tmp/startup.sh && bash /tmp/startup.sh"
+)
 
 if not PROJECT_ID:
     print("ERROR: PROJECT_ID が不明です。先に preflight_check.py を実行してください。")
