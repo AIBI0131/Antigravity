@@ -156,7 +156,7 @@ def read_sd_url_age() -> float:
 
 MACHINE_TYPE = os.environ.get("PAPERSPACE_MACHINE_TYPE", "Free-A4000")
 # 空きがなければ順番に試すフォールバック機種リスト
-MACHINE_FALLBACKS = ["Free-A4000", "Free-RTX4000", "Free-P5000", "Free-RTX5000"]
+MACHINE_FALLBACKS = ["Free-RTX5000", "Free-A4000", "Free-P5000", "Free-RTX4000"]
 
 
 def _start_notebook():
