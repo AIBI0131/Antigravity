@@ -173,7 +173,7 @@ def _start_notebook() -> dict:
             r = requests.post(
                 "https://api.paperspace.io/notebooks/v2/startNotebook",
                 headers={"x-api-key": API_KEY, "Content-Type": "application/json"},
-                json={"notebookId": NOTEBOOK_ID, "machineType": machine},
+                json={"notebookId": NOTEBOOK_ID, "machineType": machine, "shutdownTimeout": 6},
                 timeout=30,
             )
             safe_resp = r.text[:200].replace(r.json().get("token","NOMATCH"), "***") if r.ok else r.text[:200]
@@ -194,7 +194,7 @@ def _start_notebook() -> dict:
             r = requests.post(
                 "https://api.paperspace.io/notebooks/v2/startNotebook",
                 headers={"x-api-key": API_KEY, "Content-Type": "application/json"},
-                json={"notebookId": NOTEBOOK_REPO_ID, "machineType": MACHINE_TYPE},
+                json={"notebookId": NOTEBOOK_REPO_ID, "machineType": MACHINE_TYPE, "shutdownTimeout": 6},
                 timeout=30,
             )
             safe_resp = r.text[:200].replace(r.json().get("token","NOMATCH"), "***") if r.ok else r.text[:200]
