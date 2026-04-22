@@ -279,9 +279,9 @@ def _trigger_startup(handle: str, token: str, fqdn: str):
     code = (
         "import subprocess; "
         "r=subprocess.run(['pgrep','-f','startup.sh'],capture_output=True); "
-        "subprocess.Popen("
-        "'nohup bash /notebooks/startup.sh >> /tmp/startup_out.log 2>&1 &',"
-        "shell=True) "
+        "subprocess.Popen(['bash','/notebooks/startup.sh'],"
+        "start_new_session=True,"
+        "stdout=open('/tmp/startup_out.log','a'),stderr=subprocess.STDOUT) "
         "if r.returncode != 0 else print('startup.sh already running, skip')"
     )
     msg = {
