@@ -44,6 +44,10 @@ build/
 *.tmp
 rerun_trigger.json
 
+# Paperspace — API レスポンスにトークンが含まれるため除外
+paperspace-automation/new_notebook.json
+paperspace-automation/find_notebook.py
+
 # OS
 .DS_Store
 Thumbs.db

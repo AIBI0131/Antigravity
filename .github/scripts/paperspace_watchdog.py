@@ -172,7 +172,8 @@ def _start_notebook() -> dict:
                 json={"notebookId": NOTEBOOK_ID, "machineType": machine},
                 timeout=30,
             )
-            print(f"  startNotebook ({machine}) response: {r.status_code} {r.text[:200]}")
+            safe_resp = r.text[:200].replace(r.json().get("token","NOMATCH"), "***") if r.ok else r.text[:200]
+            print(f"  startNotebook ({machine}) response: {r.status_code} {safe_resp}")
             if r.status_code == 429:
                 print(f"  {machine} は空きなし → 次の機種を試みます")
                 errors.append(f"{machine}: 429 空きなし")
@@ -192,7 +193,8 @@ def _start_notebook() -> dict:
                 json={"notebookId": NOTEBOOK_REPO_ID, "machineType": MACHINE_TYPE},
                 timeout=30,
             )
-            print(f"  startNotebook (repoId) response: {r.status_code} {r.text[:200]}")
+            safe_resp = r.text[:200].replace(r.json().get("token","NOMATCH"), "***") if r.ok else r.text[:200]
+            print(f"  startNotebook (repoId) response: {r.status_code} {safe_resp}")
             if r.status_code != 429:
                 r.raise_for_status()
                 print(f"  ✓ startNotebook 成功 (repoId={NOTEBOOK_REPO_ID})")
