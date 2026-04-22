@@ -102,10 +102,14 @@ def resolve_notebook_id() -> str:
 
 
 def notebook_info() -> dict:
-    data = paperspace(f"/notebooks/{NOTEBOOK_ID}")
-    safe_keys = {"state", "status", "machineType", "clusterId", "projectId", "name", "id", "notebookRepoId"}
-    print("  notebook fields:", {k: v for k, v in data.items() if k in safe_keys})
-    return data
+    data = paperspace("/notebooks")
+    items = data if isinstance(data, list) else data.get("items", data.get("notebooks", []))
+    for nb in items:
+        if nb.get("id") == NOTEBOOK_ID:
+            safe_keys = {"state", "status", "machineType", "clusterId", "fqdn", "projectId", "name", "id", "notebookRepoId"}
+            print("  notebook fields:", {k: v for k, v in nb.items() if k in safe_keys})
+            return nb
+    raise RuntimeError(f"Notebook {NOTEBOOK_ID} がリストに見つかりません")
 
 
 def notebook_state() -> str:
