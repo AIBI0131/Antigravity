@@ -3,6 +3,8 @@
 # Notebook Command: bash /storage/paperspace-automation/startup.sh
 set -uo pipefail
 exec > >(tee -a /notebooks/startup.log) 2>&1
+exec 200>/tmp/startup.lock
+flock -n 200 || { echo "INFO: startup.sh already running (skip)."; exit 0; }
 echo "===== startup.sh begin: $(date) ====="
 
 # ── パス定数 ──────────────────────────────────────────────────────────────────
@@ -175,7 +177,4 @@ else
 fi
 
 echo "===== startup.sh done: $(date) ====="
-
-# WebUI が生きている限りコンテナを保持
-trap 'pkill -P $$ 2>/dev/null || true' EXIT
-wait "$WEBUI_PID"
+disown -a 2>/dev/null || true
