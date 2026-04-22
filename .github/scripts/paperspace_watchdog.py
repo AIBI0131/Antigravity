@@ -220,9 +220,14 @@ def _wait_for_running(max_wait: int = 300) -> str:
     print("  Running 状態を待機中...")
     for _ in range(max_wait // 15):
         time.sleep(15)
-        data = notebook_info()
-        st = data.get("state", "unknown")
-        fqdn = data.get("fqdn", "")
+        data = paperspace("/notebooks")
+        items = data if isinstance(data, list) else data.get("items", data.get("notebooks", []))
+        nb = next((n for n in items if n.get("notebookRepoId") == NOTEBOOK_REPO_ID), None)
+        if not nb:
+            print("  (リストに未登場、待機継続)")
+            continue
+        st = nb.get("state", "unknown")
+        fqdn = nb.get("fqdn", "")
         print(f"  state = {st}, fqdn = {fqdn or '(未取得)'}")
         if st.lower() == "running":
             return fqdn
