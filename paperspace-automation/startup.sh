@@ -83,7 +83,12 @@ else
     echo "✅ cloudflared 既存（スキップ）"
 fi
 
-# ── 3. ゾンビ掃除 ─────────────────────────────────────────────────────────────
+# ── 3. サービス状態確認（起動中なら全スキップ） ──────────────────────────────
+if pgrep -f 'launch.py' > /dev/null 2>&1; then
+    echo "INFO: WebUI 既に起動中 — startup をスキップ"
+    exit 0
+fi
+# 古いゾンビ掃除（WebUI が死んでいる場合のみ実行）
 pkill -f 'launch.py'           2>/dev/null || true
 pkill -f 'cloudflared tunnel'  2>/dev/null || true
 pkill -f 'auto_gen_worker'     2>/dev/null || true
