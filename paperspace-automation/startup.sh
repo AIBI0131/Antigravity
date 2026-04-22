@@ -83,16 +83,25 @@ else
     echo "✅ cloudflared 既存（スキップ）"
 fi
 
-# ── 3. サービス状態確認（起動中なら全スキップ） ──────────────────────────────
-if pgrep -f 'launch.py' > /dev/null 2>&1; then
-    echo "INFO: WebUI 既に起動中 — startup をスキップ"
+# ── 3. サービス状態確認（個別チェック） ──────────────────────────────────────
+WEBUI_UP=false
+CF_UP=false
+pgrep -f 'launch.py'           > /dev/null 2>&1 && WEBUI_UP=true
+pgrep -f 'cloudflared tunnel'  > /dev/null 2>&1 && CF_UP=true
+
+if $WEBUI_UP && $CF_UP; then
+    echo "INFO: WebUI + cloudflared 両方起動中 — startup をスキップ"
     exit 0
 fi
-# 古いゾンビ掃除（WebUI が死んでいる場合のみ実行）
-pkill -f 'launch.py'           2>/dev/null || true
-pkill -f 'cloudflared tunnel'  2>/dev/null || true
-pkill -f 'auto_gen_worker'     2>/dev/null || true
-sleep 2
+
+# WebUI が死んでいる場合のみゾンビ掃除（CF も巻き込んで再起動）
+if ! $WEBUI_UP; then
+    pkill -f 'launch.py'           2>/dev/null || true
+    pkill -f 'cloudflared tunnel'  2>/dev/null || true
+    pkill -f 'auto_gen_worker'     2>/dev/null || true
+    sleep 2
+    CF_UP=false
+fi
 
 # ── 4. api_gravity.py 配置（/storage/ にあれば使う） ─────────────────────────
 if [ -f "$API_TEMPLATE" ]; then
@@ -104,6 +113,7 @@ else
 fi
 
 # ── 5. cloudflared トンネル起動（http2・リトライ3回・Notion URL 通知） ──
+if ! $CF_UP; then
 cat > /tmp/cf_start.sh << 'CFEOF'
 #!/bin/bash
 CF_BIN="$1"
@@ -156,8 +166,10 @@ CFEOF
 chmod +x /tmp/cf_start.sh
 nohup /tmp/cf_start.sh "$CF" "${NOTION_TOKEN:-}" "${NOTION_URL_PAGE_ID:-}" "$VENV/bin/python" \
     >> /notebooks/startup.log 2>&1 &
+fi  # CF_UP
 
 # ── 6. WebUI 起動（バックグラウンド・PID を保持） ─────────────────────────────
+if ! $WEBUI_UP; then
 cd "$WEBUI"
 export GRADIO_SERVER_TIMEOUT=300
 export GRADIO_KEEP_ALIVE=True
@@ -180,6 +192,7 @@ if [ -f "$WORKER" ]; then
 else
     echo "WARN: $WORKER が見つかりません"
 fi
+fi  # WEBUI_UP
 
 echo "===== startup.sh done: $(date) ====="
 disown -a 2>/dev/null || true
