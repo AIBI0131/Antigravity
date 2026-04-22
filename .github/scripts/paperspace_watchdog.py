@@ -159,7 +159,8 @@ MACHINE_TYPE = os.environ.get("PAPERSPACE_MACHINE_TYPE", "Free-A4000")
 MACHINE_FALLBACKS = ["Free-RTX5000", "Free-A4000", "Free-P5000", "Free-RTX4000"]
 
 
-def _start_notebook():
+def _start_notebook() -> dict:
+    """Start notebook and return the API response dict (contains handle, token)."""
     errors = []
     machines_to_try = [MACHINE_TYPE] + [m for m in MACHINE_FALLBACKS if m != MACHINE_TYPE]
 
@@ -178,7 +179,7 @@ def _start_notebook():
                 continue
             r.raise_for_status()
             print(f"  ✓ startNotebook 成功 (id={NOTEBOOK_ID}, machineType={machine})")
-            return
+            return r.json()
         except Exception as e:
             errors.append(f"{machine}: {e}")
 
@@ -195,7 +196,7 @@ def _start_notebook():
             if r.status_code != 429:
                 r.raise_for_status()
                 print(f"  ✓ startNotebook 成功 (repoId={NOTEBOOK_REPO_ID})")
-                return
+                return r.json()
         except Exception as e:
             errors.append(f"repoId: {e}")
 
@@ -206,6 +207,90 @@ def _start_notebook():
 
     print(f"  WARN: 全手段失敗: {errors}")
     sys.exit(1)
+
+
+def _wait_for_running(max_wait: int = 300) -> str:
+    """Poll until Running. Returns fqdn on success, empty string on failure."""
+    print("  Running 状態を待機中...")
+    for _ in range(max_wait // 15):
+        time.sleep(15)
+        data = notebook_info()
+        st = data.get("state", "unknown")
+        fqdn = data.get("fqdn", "")
+        print(f"  state = {st}, fqdn = {fqdn or '(未取得)'}")
+        if st.lower() == "running":
+            return fqdn
+        if st.lower() in ("error", "stopped", "cancelled"):
+            print(f"  WARN: 予期しない状態 ({st})。startup トリガーをスキップ。")
+            return ""
+    print("  WARN: Running にならなかった。startup トリガーをスキップ。")
+    return ""
+
+
+def _trigger_startup(handle: str, token: str, fqdn: str):
+    """Jupyter WebSocket 経由で startup.sh をバックグラウンド実行する。"""
+    import uuid
+    import websocket
+
+    jupyter_url = f"https://{fqdn}" if fqdn else f"https://{handle}.clg07azjl.paperspacegradient.com"
+    headers = {"Authorization": f"Token {token}"}
+    print(f"  Jupyter URL: {jupyter_url}")
+
+    # Jupyter が応答するまで最大 3 分待機
+    for i in range(18):
+        try:
+            r = requests.get(f"{jupyter_url}/api/kernels", headers=headers, timeout=10)
+            if r.ok:
+                print(f"  Jupyter 応答確認 (試行 {i+1})")
+                break
+        except Exception:
+            pass
+        time.sleep(10)
+    else:
+        print("  WARN: Jupyter が応答しない。startup トリガーをスキップ。")
+        return
+
+    # セッション（Python カーネル）を作成
+    r = requests.post(
+        f"{jupyter_url}/api/sessions",
+        headers=headers,
+        json={"kernel": {"name": "python3"}, "name": "watchdog", "path": "watchdog.ipynb", "type": "notebook"},
+        timeout=30,
+    )
+    if not r.ok:
+        print(f"  WARN: セッション作成失敗: {r.text[:200]}")
+        return
+    session = r.json()
+    kernel_id = session["kernel"]["id"]
+
+    # WebSocket でコードを実行（startup.sh をバックグラウンド起動）
+    ws_url = jupyter_url.replace("https", "wss") + f"/api/kernels/{kernel_id}/channels?token={token}"
+    code = (
+        "import subprocess, os; "
+        "subprocess.Popen(['bash', '/notebooks/startup.sh'], "
+        "stdout=open('/notebooks/startup.log','a'), stderr=subprocess.STDOUT) "
+        "if not os.path.exists('/tmp/startup_running') else None; "
+        "open('/tmp/startup_running','w').close()"
+    )
+    msg = {
+        "header": {"msg_id": uuid.uuid4().hex, "username": "watchdog",
+                   "session": uuid.uuid4().hex, "msg_type": "execute_request", "version": "5.2"},
+        "parent_header": {},
+        "metadata": {},
+        "content": {"code": code, "silent": True, "store_history": False,
+                    "user_expressions": {}, "allow_stdin": False},
+    }
+    try:
+        ws = websocket.create_connection(ws_url, timeout=30)
+        ws.send(json.dumps(msg))
+        time.sleep(3)
+        ws.close()
+        print("  ✓ startup.sh 実行リクエスト送信完了")
+    except Exception as e:
+        print(f"  WARN: WebSocket 接続失敗: {e}")
+
+    # セッション後片付け
+    requests.delete(f"{jupyter_url}/api/sessions/{session['id']}", headers=headers, timeout=10)
 
 
 # ---------------------------------------------------------------------------
@@ -249,8 +334,14 @@ def main():
         print(f"→ Notebook が停止中 ({state})。再起動します。")
         if DRY_RUN:
             print("  [DRY_RUN] start をスキップ")
-        else:
-            _start_notebook()
+            sys.exit(0)
+        nb_data = _start_notebook()
+        handle = nb_data.get("handle", "")
+        token = nb_data.get("token", "")
+        if handle and token:
+            fqdn = _wait_for_running()
+            if fqdn:
+                _trigger_startup(handle, token, fqdn)
         sys.exit(0)
 
     # ── running だが URL が古い場合は stop → start ───────────────────────────
