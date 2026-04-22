@@ -277,10 +277,11 @@ def _trigger_startup(handle: str, token: str, fqdn: str):
     # WebSocket でコードを実行（startup.sh をバックグラウンド起動）
     ws_url = jupyter_url.replace("https", "wss") + f"/api/kernels/{kernel_id}/channels?token={token}"
     code = (
-        "import subprocess, os; "
+        "import subprocess; "
         "r=subprocess.run(['pgrep','-f','startup.sh'],capture_output=True); "
-        "subprocess.Popen(['bash', '/notebooks/startup.sh'], "
-        "stdout=open('/notebooks/startup.log','a'), stderr=subprocess.STDOUT) "
+        "subprocess.Popen("
+        "'nohup bash /notebooks/startup.sh >> /tmp/startup_out.log 2>&1 &',"
+        "shell=True) "
         "if r.returncode != 0 else print('startup.sh already running, skip')"
     )
     msg = {
