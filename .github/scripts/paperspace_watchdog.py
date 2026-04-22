@@ -278,10 +278,10 @@ def _trigger_startup(handle: str, token: str, fqdn: str):
     ws_url = jupyter_url.replace("https", "wss") + f"/api/kernels/{kernel_id}/channels?token={token}"
     code = (
         "import subprocess, os; "
+        "r=subprocess.run(['pgrep','-f','startup.sh'],capture_output=True); "
         "subprocess.Popen(['bash', '/notebooks/startup.sh'], "
         "stdout=open('/notebooks/startup.log','a'), stderr=subprocess.STDOUT) "
-        "if not os.path.exists('/tmp/startup_running') else None; "
-        "open('/tmp/startup_running','w').close()"
+        "if r.returncode != 0 else print('startup.sh already running, skip')"
     )
     msg = {
         "header": {"msg_id": uuid.uuid4().hex, "username": "watchdog",
