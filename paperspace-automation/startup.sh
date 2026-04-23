@@ -40,7 +40,8 @@ if [ -n "${GITHUB_TOKEN:-}" ] && [ -z "${_STARTUP_UPDATED:-}" ]; then
     _repo="https://api.github.com/repos/AIBI0131/Antigravity/contents/paperspace-automation"
     _hdr=(-H "Authorization: token ${GITHUB_TOKEN}" -H "Accept: application/vnd.github.v3.raw")
     for _f in startup.sh auto_gen_worker.py; do
-        curl -sS "${_hdr[@]}" "${_repo}/${_f}?ref=master" -o "$STORAGE/${_f}.new" --max-time 30 \
+        curl -fsS "${_hdr[@]}" "${_repo}/${_f}?ref=master" -o "$STORAGE/${_f}.new" --max-time 30 \
+            && [ -s "$STORAGE/${_f}.new" ] \
             && mv "$STORAGE/${_f}.new" "$STORAGE/${_f}" \
             || rm -f "$STORAGE/${_f}.new"
     done

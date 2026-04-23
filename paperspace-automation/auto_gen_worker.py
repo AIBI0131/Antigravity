@@ -90,12 +90,12 @@ def write_done_flag(queue_hash: str):
     })
     fd, tmp = tempfile.mkstemp(dir=STORAGE)
     try:
-        os.write(fd, data.encode())
-        os.close(fd)
+        with os.fdopen(fd, "w") as f:
+            f.write(data)
         os.replace(tmp, DONE_FLAG)
     except Exception:
-        os.close(fd)
-        os.unlink(tmp)
+        if os.path.exists(tmp):
+            os.unlink(tmp)
         raise
     print(f"DONE フラグ書き出し: {DONE_FLAG}")
 
