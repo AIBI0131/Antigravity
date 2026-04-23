@@ -61,7 +61,8 @@ if [ ! -f "$READY" ]; then
         torch torchvision torchaudio \
         --index-url https://download.pytorch.org/whl/cu121
     "$VENV/bin/pip" install \
-        httpx matplotlib ipython pyparsing requests notion-client xformers
+        httpx matplotlib ipython pyparsing requests notion-client xformers \
+        google-api-python-client google-auth
     "$VENV/bin/pip" install --no-build-isolation \
         "https://github.com/openai/CLIP/archive/d50d76daa670286dd6cacf3bcd80b5e4823fc8e1.zip"
     echo "built_at=$(date +%s)" > "$READY"
@@ -193,6 +194,35 @@ else
     echo "WARN: $WORKER が見つかりません"
 fi
 fi  # WEBUI_UP
+
+# ── 8. ワーカー + WebUI 死活監視ループ ────────────────────────────��──────────
+(
+  sleep 300  # 起動完了を待つ
+  MAX_RESTART=5
+  restart_count=0
+  while true; do
+    if ! pgrep -f 'auto_gen_worker' > /dev/null 2>&1; then
+      if [ -f "$WORKER" ]; then
+        restart_count=$((restart_count + 1))
+        if [ "$restart_count" -gt "$MAX_RESTART" ]; then
+          echo "[monitor] worker が $MAX_RESTART 回再起動失敗 — 監視終了 ($(date))"
+          break
+        fi
+        echo "[monitor] worker dead — 再起動 ($restart_count/$MAX_RESTART) ($(date))"
+        nohup "$VENV/bin/python" -u "$WORKER" >> /notebooks/worker.log 2>&1 &
+      fi
+    else
+      restart_count=0
+    fi
+    if ! pgrep -f 'launch.py' > /dev/null 2>&1; then
+      echo "[monitor] WebUI dead — startup.sh を再実行 ($(date))"
+      bash "$0"
+      break
+    fi
+    sleep 120
+  done
+) >> /notebooks/startup.log 2>&1 &
+echo "monitor PID: $!"
 
 echo "===== startup.sh done: $(date) ====="
 disown -a 2>/dev/null || true

@@ -371,7 +371,13 @@ def main():
             paperspace(f"/notebooks/{NOTEBOOK_ID}/stop", method="POST")
             print("  stop リクエスト送信完了。")
             if wait_until_stopped():
-                _start_notebook()
+                nb_data = _start_notebook()
+                handle = nb_data.get("handle", "")
+                token = nb_data.get("token", "")
+                if handle and token:
+                    fqdn = _wait_for_running()
+                    if fqdn:
+                        _trigger_startup(handle, token, fqdn)
         except Exception as e:
             print(f"  WARN: stop/start 失敗 ({e})。手動での再起動が必要です。")
         sys.exit(0)
