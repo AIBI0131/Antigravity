@@ -35,6 +35,21 @@ else
     NOTION_URL_PAGE_ID=""
 fi
 
+# ── 1a. GitHub から最新スクリプトを自動更新 ───────────────────────────────────
+if [ -n "${GITHUB_TOKEN:-}" ] && [ -z "${_STARTUP_UPDATED:-}" ]; then
+    _repo="https://api.github.com/repos/AIBI0131/Antigravity/contents/paperspace-automation"
+    _hdr=(-H "Authorization: token ${GITHUB_TOKEN}" -H "Accept: application/vnd.github.v3.raw")
+    for _f in startup.sh auto_gen_worker.py; do
+        curl -sS "${_hdr[@]}" "${_repo}/${_f}?ref=master" -o "$STORAGE/${_f}.new" --max-time 30 \
+            && mv "$STORAGE/${_f}.new" "$STORAGE/${_f}" \
+            || rm -f "$STORAGE/${_f}.new"
+    done
+    chmod +x "$STORAGE/startup.sh"
+    echo "✅ GitHub から最新スクリプト取得完了"
+    export _STARTUP_UPDATED=1
+    exec bash "$0"
+fi
+
 # ── 1b. /notebooks/ → /storage/ へのファイル移行（初回のみ）───────────────────
 if [ ! -f "$QUEUE_TXT" ] && [ -f "/notebooks/queue.txt" ]; then
     cp /notebooks/queue.txt "$QUEUE_TXT"
