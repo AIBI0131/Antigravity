@@ -81,23 +81,14 @@ stop_notebook() {
     notebook_id=$(grep -E '^PAPERSPACE_NOTEBOOK_ID=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '\r')
     if [ -n "$api_key" ] && [ -n "$notebook_id" ]; then
         echo "[auto-stop] 全件完了 — Notebook を自動停止します ($(date))"
-        local code
-        code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
-            "https://api.paperspace.com/v1/notebooks/${notebook_id}/stop" \
-            -H "Authorization: Bearer ${api_key}" \
+        local result
+        result=$(curl -sS -X POST \
+            "https://api.paperspace.io/notebooks/v2/stopNotebook" \
+            -H "x-api-key: ${api_key}" \
             -H "Content-Type: application/json" \
+            -d "{\"notebookId\": \"${notebook_id}\"}" \
             --max-time 30)
-        if [ "$code" -ge 200 ] && [ "$code" -lt 300 ]; then
-            echo "[auto-stop] ✅ 停止リクエスト送信成功 (HTTP $code)"
-        else
-            echo "[auto-stop] WARN: v1 失敗 (HTTP $code) — v2 で再試行"
-            code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
-                "https://api.paperspace.io/notebooks/${notebook_id}/stop" \
-                -H "x-api-key: ${api_key}" \
-                -H "Content-Type: application/json" \
-                --max-time 30)
-            echo "[auto-stop] v2 結果: HTTP $code"
-        fi
+        echo "[auto-stop] 結果: $result"
     else
         echo "[auto-stop] WARN: PAPERSPACE_API_KEY / PAPERSPACE_NOTEBOOK_ID 未設定 — 自動停止できません"
     fi
