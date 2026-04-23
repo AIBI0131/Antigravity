@@ -82,10 +82,21 @@ def save_checkpoint(index: int):
 
 
 def write_done_flag(queue_hash: str):
-    DONE_FLAG.write_text(json.dumps({
+    import os
+    import tempfile
+    data = json.dumps({
         "queue_hash": queue_hash,
         "completed_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-    }))
+    })
+    fd, tmp = tempfile.mkstemp(dir=STORAGE)
+    try:
+        os.write(fd, data.encode())
+        os.close(fd)
+        os.replace(tmp, DONE_FLAG)
+    except Exception:
+        os.close(fd)
+        os.unlink(tmp)
+        raise
     print(f"DONE フラグ書き出し: {DONE_FLAG}")
 
 

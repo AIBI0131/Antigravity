@@ -92,6 +92,12 @@ queue_is_done() {
 
 # ── helper: Notebook 自動停止 ─────────────────────────────────────────────────
 stop_notebook() {
+    echo "[auto-stop] プロセス掃除中..."
+    pkill -f 'launch.py'       2>/dev/null || true
+    pkill -f 'auto_gen_worker' 2>/dev/null || true
+    pkill -f 'cloudflared'     2>/dev/null || true
+    sleep 3
+
     local api_key notebook_id
     api_key=$(grep -E '^PAPERSPACE_API_KEY=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '\r')
     notebook_id=$(grep -E '^PAPERSPACE_NOTEBOOK_ID=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '\r')
@@ -252,7 +258,7 @@ echo "[cf] ERROR: 3回試行しても URL 取得できず"
 CFEOF
 chmod +x /tmp/cf_start.sh
 nohup /tmp/cf_start.sh "$CF" "${NOTION_TOKEN:-}" "${NOTION_URL_PAGE_ID:-}" "$VENV/bin/python" \
-    >> /notebooks/startup.log 2>&1 &
+    200>&- >> /notebooks/startup.log 2>&1 &
 fi  # CF_UP
 
 # ── 6. WebUI 起動（バックグラウンド・PID を保持） ─────────────────────────────
@@ -267,7 +273,7 @@ nohup "$VENV/bin/python" launch.py \
     --enable-insecure-extension-access \
     --api \
     --gradio-queue \
-    > /notebooks/webui.log 2>&1 &
+    200>&- > /notebooks/webui.log 2>&1 &
 WEBUI_PID=$!
 echo "WebUI PID: $WEBUI_PID"
 
@@ -278,7 +284,7 @@ if queue_is_done; then
 elif [ -f "$WORKER" ]; then
     rm -f "$DONE_FLAG"
     nohup "$VENV/bin/python" -u "$WORKER" \
-        > /notebooks/worker.log 2>&1 &
+        200>&- > /notebooks/worker.log 2>&1 &
     echo "worker PID: $!"
 else
     echo "WARN: $WORKER が見つかりません"
@@ -304,7 +310,7 @@ fi  # WEBUI_UP
           break
         fi
         echo "[monitor] worker dead — 再起動 ($restart_count/$MAX_RESTART) ($(date))"
-        nohup "$VENV/bin/python" -u "$WORKER" >> /notebooks/worker.log 2>&1 &
+        nohup "$VENV/bin/python" -u "$WORKER" 200>&- >> /notebooks/worker.log 2>&1 &
       fi
     else
       restart_count=0
