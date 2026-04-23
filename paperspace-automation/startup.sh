@@ -286,6 +286,7 @@ fi  # WEBUI_UP
 
 # ── 8. ワーカー + WebUI 死活監視ループ ────────────────────────────��──────────
 (
+  exec 200>&-  # flock fd を閉じる（self-update の exec bash "$0" がロックを取得できるようにする）
   sleep 300  # 起動完了を待つ
   MAX_RESTART=5
   restart_count=0
