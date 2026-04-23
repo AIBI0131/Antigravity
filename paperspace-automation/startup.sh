@@ -47,6 +47,7 @@ if [ -n "${GITHUB_TOKEN:-}" ] && [ -z "${_STARTUP_UPDATED:-}" ]; then
     chmod +x "$STORAGE/startup.sh"
     echo "✅ GitHub から最新スクリプト取得完了"
     export _STARTUP_UPDATED=1
+    exec 200>&-  # flock 解放（tee プロセス置換への fd 継承を防ぐ）
     exec bash "$0"
 fi
 
