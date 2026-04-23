@@ -1,8 +1,8 @@
 """
 Queue-file ベースの自動生成ワーカー。
 
-/storage/paperspace-automation/queue.txt の各行を順に WebUI API に投げ、
-checkpoint.json で進捗を保存する。
+/notebooks/queue.txt の各行を順に WebUI API に投げ、
+/notebooks/checkpoint.json で進捗を保存する。
 再起動後は checkpoint の次の行から再開する。
 
 queue.txt フォーマット（workflow-gravity の prompts.txt と同じ形式）:
@@ -14,9 +14,9 @@ queue.txt フォーマット（workflow-gravity の prompts.txt と同じ形式�
 
 import hashlib
 import json
+import os
 import re
 import shlex
-import shutil
 import sys
 import time
 from pathlib import Path
@@ -31,6 +31,28 @@ CONFIG_FILE = Path("/notebooks/queue_config.json")
 WEBUI_ROOT = Path("/notebooks/stable-diffusion-webui")
 DONE_FLAG = STORAGE / "DONE"
 
+# ── .env 読み込み（GDRIVE_ROOT_FOLDER_ID 等）──────────────────────────────────
+_env_file = Path("/storage/paperspace-automation/.env")
+if _env_file.exists():
+    for _line in _env_file.read_text(encoding="utf-8").splitlines():
+        _line = _line.strip()
+        if _line and not _line.startswith("#") and "=" in _line:
+            _k, _v = _line.split("=", 1)
+            os.environ.setdefault(_k.strip(), _v.strip())
+
+# ── Google Drive アップローダー（任意・なければスキップ）─────────────────────
+try:
+    import gdrive_uploader
+    _GDRIVE_ENABLED = bool(os.environ.get("GDRIVE_ROOT_FOLDER_ID"))
+    if _GDRIVE_ENABLED:
+        print("✅ Google Drive アップロード: 有効")
+    else:
+        print("INFO: GDRIVE_ROOT_FOLDER_ID 未設定 — Drive アップロードをスキップ")
+except ImportError:
+    gdrive_uploader = None
+    _GDRIVE_ENABLED = False
+    print("INFO: gdrive_uploader.py が見つかりません — Drive アップロードをスキップ")
+
 DEFAULT_CONFIG = {
     "steps": 28,
     "cfg_scale": 7.0,
@@ -39,7 +61,6 @@ DEFAULT_CONFIG = {
     "sampler_name": "DPM++ 2M",
     "scheduler": "Karras",
     "seed": -1,
-    "per_image_timeout": 600,
 }
 
 
@@ -76,9 +97,7 @@ def load_checkpoint() -> int:
 
 
 def save_checkpoint(index: int):
-    tmp = CHECKPOINT_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps({"last_done": index}))
-    shutil.move(str(tmp), str(CHECKPOINT_FILE))
+    CHECKPOINT_FILE.write_text(json.dumps({"last_done": index}))
 
 
 def write_done_flag(queue_hash: str):
@@ -123,7 +142,7 @@ def build_payload(parsed: dict, cfg: dict) -> dict:
         except ValueError:
             print(f"[WARN] batch_size 無効: {parsed['batch_size']}")
 
-    payload["save_images"] = True
+    payload["save_images"] = False
 
     # --outpath_samples → WebUI の保存先を override
     if "outpath_samples" in parsed:
@@ -169,14 +188,15 @@ def wait_webui(timeout: int = 600):
     raise RuntimeError(f"WebUI が {timeout}秒経っても応答しません")
 
 
-def generate(payload: dict, index: int, timeout: int = 600) -> bool:
+def generate(payload: dict, index: int) -> tuple[bool, list]:
     try:
-        r = requests.post(f"{WEBUI_API}/sdapi/v1/txt2img", json=payload, timeout=timeout)
+        r = requests.post(f"{WEBUI_API}/sdapi/v1/txt2img", json=payload, timeout=600)
         r.raise_for_status()
-        return True
+        images = r.json().get("images", [])
+        return True, images
     except Exception as e:
         print(f"  [{index}] ERROR: {e}")
-        return False
+        return False, []
 
 
 def main():
@@ -206,10 +226,31 @@ def main():
         preview = parsed.get("prompt", "")[:60]
         print(f"[{i}/{total-1}] {preview}...")
 
-        ok = generate(payload, i, timeout=cfg.get("per_image_timeout", 600))
+        ok, images = generate(payload, i)
         if ok:
-            save_checkpoint(i)
-            print(f"  [{i}] ✅ 完了 (checkpoint 保存)")
+            if _GDRIVE_ENABLED and images and "outpath_samples" in parsed:
+                outpath = parsed["outpath_samples"]
+                batch_size = payload.get("batch_size", 1)
+                num_grids = 0 if batch_size <= 1 else max(0, len(images) - batch_size)
+                individual = images[num_grids:]
+                grids = images[:num_grids]
+                drive_ok = True
+                if individual:
+                    drive_ok &= gdrive_uploader.upload_images_to_drive(
+                        individual, outpath, filename_prefix=f"{i:04d}"
+                    )
+                if grids:
+                    gdrive_uploader.upload_images_to_drive(
+                        grids, outpath + "/raw_grid", filename_prefix=f"{i:04d}"
+                    )
+                if drive_ok:
+                    save_checkpoint(i)
+                    print(f"  [{i}] ✅ 完了 (checkpoint 保存)")
+                else:
+                    print(f"  [{i}] ⚠️  Drive アップロード失敗 — checkpoint 未保存（次回再生成）")
+            else:
+                save_checkpoint(i)
+                print(f"  [{i}] ✅ 完了 (checkpoint 保存)")
         else:
             print(f"  [{i}] ❌ 失敗 → スキップして続行")
 

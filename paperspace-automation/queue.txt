@@ -1,0 +1,6 @@
+# queue.txt — 自動生成ワーカー用プロンプトキュー
+# 1行1プロンプト。# で始まる行と空行はスキップ。
+# 追記してgit pushすれば、次回Notebook起動時に自動反映される。
+#
+# フォーマット例:
+# --prompt "1girl, ..." --batch_size 2 --outpath_samples "outputs/project_name" --negative_prompt "..." --ad_prompt "face" --ad_steps 40

@@ -17,18 +17,97 @@ STORAGE=/storage/paperspace-automation            # 共有永続領域
 ENV_FILE="$STORAGE/.env"
 API_TEMPLATE="$STORAGE/api_gravity_template.py"
 WORKER="$STORAGE/auto_gen_worker.py"
+DONE_FLAG="$STORAGE/DONE"
+QUEUE_TXT="$STORAGE/queue.txt"
+CHECKPOINT="$STORAGE/checkpoint.json"
 
 # ── 1. .env（Notion トークン等）を /storage/ から読み込み ─────────────────────
 if [ -f "$ENV_FILE" ]; then
     NOTION_TOKEN=$(grep -E '^NOTION_TOKEN=' "$ENV_FILE" | cut -d= -f2- | tr -d '\r')
     NOTION_URL_PAGE_ID=$(grep -E '^NOTION_URL_PAGE_ID=' "$ENV_FILE" | cut -d= -f2- | tr -d '\r')
     GRAVITY_SECRET=$(grep -E '^GRAVITY_SECRET=' "$ENV_FILE" | cut -d= -f2- | tr -d '\r')
+    GITHUB_TOKEN=$(grep -E '^GITHUB_TOKEN=' "$ENV_FILE" | cut -d= -f2- | tr -d '\r')
     export GRAVITY_SECRET
     echo "✅ .env 読み込み完了 ($ENV_FILE)"
 else
     echo "INFO: $ENV_FILE なし — Notion 通知なしで起動"
     NOTION_TOKEN=""
     NOTION_URL_PAGE_ID=""
+fi
+
+# ── 1b. /notebooks/ → /storage/ へのファイル移行（初回のみ）───────────────────
+if [ ! -f "$QUEUE_TXT" ] && [ -f "/notebooks/queue.txt" ]; then
+    cp /notebooks/queue.txt "$QUEUE_TXT"
+    echo "INFO: queue.txt を /storage/ に移行しました"
+fi
+if [ ! -f "$CHECKPOINT" ] && [ -f "/notebooks/checkpoint.json" ]; then
+    cp /notebooks/checkpoint.json "$CHECKPOINT"
+    echo "INFO: checkpoint.json を /storage/ に移行しました"
+fi
+
+# ── 1c. GitHub から最新 queue.txt を取得 ──────────────────────────────────────
+if [ -n "${GITHUB_TOKEN:-}" ]; then
+    echo "GitHub から queue.txt を取得中..."
+    _http=$(curl -sS -o "$QUEUE_TXT.tmp" -w '%{http_code}' \
+        -H "Authorization: token ${GITHUB_TOKEN}" \
+        -H "Accept: application/vnd.github.v3.raw" \
+        "https://api.github.com/repos/AIBI0131/Antigravity/contents/paperspace-automation/queue.txt?ref=master" \
+        --max-time 30)
+    if [ "$_http" = "200" ] && [ -s "$QUEUE_TXT.tmp" ]; then
+        mv "$QUEUE_TXT.tmp" "$QUEUE_TXT"
+        echo "✅ queue.txt 取得成功"
+    else
+        rm -f "$QUEUE_TXT.tmp"
+        echo "WARN: queue.txt 取得失敗 (HTTP $_http) — 既存ファイルを使用"
+    fi
+else
+    echo "INFO: GITHUB_TOKEN 未設定 — queue.txt のGitHub同期スキップ"
+fi
+
+# ── helper: queue 完了判定 ────────────────────────────────────────────────────
+queue_is_done() {
+    [ ! -f "$DONE_FLAG" ] && return 1
+    [ ! -f "$QUEUE_TXT" ] && return 1
+    local saved current
+    saved=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['queue_hash'])" "$DONE_FLAG" 2>/dev/null)
+    current=$(md5sum "$QUEUE_TXT" | cut -d' ' -f1)
+    [ "$saved" = "$current" ]
+}
+
+# ── helper: Notebook 自動停止 ─────────────────────────────────────────────────
+stop_notebook() {
+    local api_key notebook_id
+    api_key=$(grep -E '^PAPERSPACE_API_KEY=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '\r')
+    notebook_id=$(grep -E '^PAPERSPACE_NOTEBOOK_ID=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '\r')
+    if [ -n "$api_key" ] && [ -n "$notebook_id" ]; then
+        echo "[auto-stop] 全件完了 — Notebook を自動停止します ($(date))"
+        local code
+        code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+            "https://api.paperspace.com/v1/notebooks/${notebook_id}/stop" \
+            -H "Authorization: Bearer ${api_key}" \
+            -H "Content-Type: application/json" \
+            --max-time 30)
+        if [ "$code" -ge 200 ] && [ "$code" -lt 300 ]; then
+            echo "[auto-stop] ✅ 停止リクエスト送信成功 (HTTP $code)"
+        else
+            echo "[auto-stop] WARN: v1 失敗 (HTTP $code) — v2 で再試行"
+            code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+                "https://api.paperspace.io/notebooks/${notebook_id}/stop" \
+                -H "x-api-key: ${api_key}" \
+                -H "Content-Type: application/json" \
+                --max-time 30)
+            echo "[auto-stop] v2 結果: HTTP $code"
+        fi
+    else
+        echo "[auto-stop] WARN: PAPERSPACE_API_KEY / PAPERSPACE_NOTEBOOK_ID 未設定 — 自動停止できません"
+    fi
+}
+
+# ── early check: 全件完了済みなら即停止（GPU 節約）─────────────────────────
+if queue_is_done; then
+    echo "INFO: queue 全件完了済み (DONE フラグ有効) — Notebook を即停止して GPU 解放 ($(date))"
+    stop_notebook
+    exit 0
 fi
 
 # ── 2. セットアップ（.READY なければ初回構築・冪等） ─────────────────────────
@@ -186,7 +265,11 @@ WEBUI_PID=$!
 echo "WebUI PID: $WEBUI_PID"
 
 # ── 7. 自動生成ワーカー起動 ──────────────────────────────────────────────────
-if [ -f "$WORKER" ]; then
+if queue_is_done; then
+    echo "INFO: queue 全件完了済み (DONE フラグ有効) — worker 起動スキップ、Notebook を停止します"
+    stop_notebook
+elif [ -f "$WORKER" ]; then
+    rm -f "$DONE_FLAG"
     nohup "$VENV/bin/python" -u "$WORKER" \
         > /notebooks/worker.log 2>&1 &
     echo "worker PID: $!"
@@ -202,7 +285,11 @@ fi  # WEBUI_UP
   restart_count=0
   while true; do
     if ! pgrep -f 'auto_gen_worker' > /dev/null 2>&1; then
-      if [ -f "$WORKER" ]; then
+      if queue_is_done; then
+        echo "[monitor] worker 完了 (DONE フラグ有効) — Notebook を停止します ($(date))"
+        stop_notebook
+        break
+      elif [ -f "$WORKER" ]; then
         restart_count=$((restart_count + 1))
         if [ "$restart_count" -gt "$MAX_RESTART" ]; then
           echo "[monitor] worker が $MAX_RESTART 回再起動失敗 — 監視終了 ($(date))"
