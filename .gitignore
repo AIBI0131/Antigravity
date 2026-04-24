@@ -89,3 +89,12 @@ test_shlex.py
 オノマトペ/
 参考記事/
 ユニコわどセミナー/
+
+# OAuth2 / GCP 認証情報
+gdrive_token.json
+gdrive_token.json.bak
+client_secret.json
+
+# Claude Code セカンドオピニオン一時ファイル
+.claude/tmp/*
+!.claude/tmp/.gitkeep

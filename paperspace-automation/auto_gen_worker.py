@@ -202,7 +202,10 @@ def _cleanup_local(outpath: str):
     out = outpath.strip().strip("\"'")
     if not Path(out).is_absolute():
         out = str(WEBUI_ROOT / out)
-    d = Path(out)
+    d = Path(out).resolve()
+    if not str(d).startswith(str(WEBUI_ROOT.resolve())):
+        print(f"  [WARN] _cleanup_local: パスが WEBUI_ROOT 外 ({d}) — スキップ")
+        return
     if not d.exists():
         return
     for p in d.glob("*.png"):
