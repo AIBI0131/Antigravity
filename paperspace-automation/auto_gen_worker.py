@@ -50,7 +50,7 @@ DEFAULT_CONFIG = {
 }
 
 QUEUE_POLL_INTERVAL = 60
-QUEUE_POLL_MAX_WAIT = 180
+QUEUE_POLL_MAX_WAIT = 1800
 
 
 def load_config() -> dict:
