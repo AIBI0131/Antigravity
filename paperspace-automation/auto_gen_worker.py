@@ -18,7 +18,6 @@ import os
 import re
 import shlex
 import shutil
-import sys
 import time
 from pathlib import Path
 
@@ -49,6 +48,9 @@ DEFAULT_CONFIG = {
     "seed": -1,
     "per_image_timeout": 600,
 }
+
+QUEUE_POLL_INTERVAL = 60
+QUEUE_POLL_MAX_WAIT = 1800
 
 
 def load_config() -> dict:
@@ -232,57 +234,77 @@ def _cleanup_local(outpath: str):
         pass
 
 
+def _wait_for_queue_update(current_hash: str) -> bool:
+    """queue.txt の更新を待機。更新があれば True、タイムアウトなら False。"""
+    waited = 0
+    while waited < QUEUE_POLL_MAX_WAIT:
+        time.sleep(QUEUE_POLL_INTERVAL)
+        waited += QUEUE_POLL_INTERVAL
+        if not QUEUE_FILE.exists():
+            continue
+        new_hash = hashlib.md5(QUEUE_FILE.read_bytes()).hexdigest()
+        if new_hash != current_hash:
+            print(f"[INFO] queue.txt 更新検出（待機 {waited}秒）")
+            return True
+        if waited % 300 == 0:
+            print(f"[INFO] queue.txt 更新待機中... ({waited}/{QUEUE_POLL_MAX_WAIT}秒)")
+    return False
+
+
 def main():
     print("=== auto_gen_worker 起動 ===")
     wait_webui()
-
     cfg = load_config()
-    queue = load_queue()
-    queue_hash = hashlib.md5(QUEUE_FILE.read_bytes()).hexdigest()
-    last_done = load_checkpoint(queue)
-    start_from = last_done + 1
 
-    total = len(queue)
-    remaining = total - start_from
-    print(f"全 {total} 件 / 開始: {start_from} 番目（残り {remaining} 件）")
+    while True:
+        queue = load_queue()
+        queue_hash = hashlib.md5(QUEUE_FILE.read_bytes()).hexdigest()
+        last_done = load_checkpoint(queue)
+        start_from = last_done + 1
 
-    if start_from >= total:
-        print("全プロンプト処理済みです。queue.txt を更新してください。")
-        write_done_flag(queue_hash)
-        sys.exit(0)
+        total = len(queue)
+        remaining = total - start_from
+        print(f"全 {total} 件 / 開始: {start_from} 番目（残り {remaining} 件）")
 
-    for i in range(start_from, total):
-        line = queue[i]
-        parsed = parse_prompt_line(line)
-        payload = build_payload(parsed, cfg)
+        if start_from >= total:
+            print("全プロンプト処理済み。queue.txt の更新を待機中...")
+            if _wait_for_queue_update(queue_hash):
+                continue
+            print("タイムアウト — DONE フラグを書き出して終了します。")
+            write_done_flag(queue_hash)
+            break
 
-        preview = parsed.get("prompt", "")[:60]
-        print(f"[{i}/{total-1}] {preview}...")
+        for i in range(start_from, total):
+            line = queue[i]
+            parsed = parse_prompt_line(line)
+            payload = build_payload(parsed, cfg)
 
-        result = generate(payload, i, timeout=cfg.get("per_image_timeout", 600))
-        if result:
-            save_checkpoint(i, queue)
-            print(f"  [{i}] ✅ 完了 (checkpoint 保存)")
+            preview = parsed.get("prompt", "")[:60]
+            print(f"[{i}/{total-1}] {preview}...")
 
-            outpath = parsed.get("outpath_samples", "")
-            if _GDRIVE_ENABLED and _gdrive_uploader and outpath:
-                images = result.get("images", [])
-                if images:
-                    try:
-                        ok = _gdrive_uploader.upload_images_to_drive(
-                            images,
-                            outpath,
-                            filename_prefix=f"{i:05d}",
-                        )
-                        if ok:
-                            _cleanup_local(outpath)
-                    except Exception as e:
-                        print(f"  [{i}] [WARN] Drive アップロードエラー（ローカルに残存）: {e}")
-        else:
-            print(f"  [{i}] ❌ 失敗 → スキップして続行")
+            result = generate(payload, i, timeout=cfg.get("per_image_timeout", 600))
+            if result:
+                save_checkpoint(i, queue)
+                print(f"  [{i}] ✅ 完了 (checkpoint 保存)")
 
-    print("=== 全プロンプト完了 ===")
-    write_done_flag(queue_hash)
+                outpath = parsed.get("outpath_samples", "")
+                if _GDRIVE_ENABLED and _gdrive_uploader and outpath:
+                    images = result.get("images", [])
+                    if images:
+                        try:
+                            ok = _gdrive_uploader.upload_images_to_drive(
+                                images,
+                                outpath,
+                                filename_prefix=f"{i:05d}",
+                            )
+                            if ok:
+                                _cleanup_local(outpath)
+                        except Exception as e:
+                            print(f"  [{i}] [WARN] Drive アップロードエラー（ローカルに残存）: {e}")
+            else:
+                print(f"  [{i}] ❌ 失敗 → スキップして続行")
+
+        print("=== 現在のキュー完了 ===")
 
 
 if __name__ == "__main__":

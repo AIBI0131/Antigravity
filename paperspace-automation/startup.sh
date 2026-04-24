@@ -298,6 +298,26 @@ elif [ -f "$WORKER" ]; then
 else
     echo "WARN: $WORKER が見つかりません"
 fi
+
+# ── 7a. queue.txt バックグラウンド同期（GitHub → /storage/） ─────────────────
+if [ -n "${GITHUB_TOKEN:-}" ]; then
+(
+  exec 200>&-
+  _qurl="https://api.github.com/repos/AIBI0131/Antigravity/contents/paperspace-automation/queue.txt?ref=master"
+  _qhdr=(-H "Authorization: token ${GITHUB_TOKEN}" -H "Accept: application/vnd.github.v3.raw")
+  while true; do
+    sleep 60
+    curl -fsS "${_qhdr[@]}" "$_qurl" -o "$QUEUE_TXT.sync" --max-time 30 \
+        && [ -s "$QUEUE_TXT.sync" ] \
+        && ! cmp -s "$QUEUE_TXT.sync" "$QUEUE_TXT" \
+        && mv "$QUEUE_TXT.sync" "$QUEUE_TXT" \
+        && echo "[queue-sync] ✅ queue.txt 更新検出・反映 ($(date))" \
+        || rm -f "$QUEUE_TXT.sync"
+  done
+) >> /notebooks/startup.log 2>&1 &
+echo "queue-sync PID: $!"
+fi
+
 fi  # WEBUI_UP
 
 # ── 8. ワーカー + WebUI 死活監視ループ ────────────────────────────��──────────
