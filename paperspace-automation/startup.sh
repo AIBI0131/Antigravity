@@ -103,25 +103,26 @@ queue_is_done() {
 _resolve_my_notebook_id() {
     local api_key="$1"
     local repo_id="${PAPERSPACE_NOTEBOOK_REPO_ID:-}"
+    if [ -z "$repo_id" ]; then
+        echo "[auto-stop] WARN: PAPERSPACE_NOTEBOOK_REPO_ID 未設定 — ID 自動取得スキップ" >&2
+        return 1
+    fi
     _STOP_API_KEY="$api_key" _STOP_REPO_ID="$repo_id" python3 -c "
 import json, os, sys, urllib.request
 api_key = os.environ['_STOP_API_KEY']
-repo_id = os.environ.get('_STOP_REPO_ID', '')
+repo_id = os.environ['_STOP_REPO_ID']
 try:
     req = urllib.request.Request(
         'https://api.paperspace.com/v1/notebooks',
         headers={'Authorization': 'Bearer ' + api_key, 'Content-Type': 'application/json'})
     raw = json.load(urllib.request.urlopen(req, timeout=15))
     data = raw.get('items', raw) if isinstance(raw, dict) else raw
-    if repo_id:
-        for n in data:
-            if n.get('notebookRepoId') == repo_id:
-                print(n['id']); sys.exit(0)
     for n in data:
-        if n.get('state') == 'Running':
+        if n.get('notebookRepoId') == repo_id:
             print(n['id']); sys.exit(0)
-except Exception:
-    pass
+    print('no match for repo_id=' + repo_id, file=sys.stderr)
+except Exception as e:
+    print('API error: ' + str(e), file=sys.stderr)
 " 2>/dev/null
 }
 
