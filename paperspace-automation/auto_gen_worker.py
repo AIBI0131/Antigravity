@@ -74,18 +74,34 @@ def load_queue() -> list:
     return lines
 
 
-def load_checkpoint() -> int:
-    if CHECKPOINT_FILE.exists():
-        try:
-            return int(json.loads(CHECKPOINT_FILE.read_text()).get("last_done", -1))
-        except Exception:
-            pass
-    return -1
+def _prefix_hash(queue_lines: list, up_to: int) -> str:
+    return hashlib.md5("\n".join(queue_lines[:up_to + 1]).encode()).hexdigest()
 
 
-def save_checkpoint(index: int):
+def load_checkpoint(queue_lines: list) -> int:
+    if not CHECKPOINT_FILE.exists():
+        return -1
+    try:
+        data = json.loads(CHECKPOINT_FILE.read_text(encoding="utf-8"))
+        last_done = int(data.get("last_done", -1))
+        saved_hash = data.get("prefix_hash", "")
+    except Exception:
+        return -1
+    if last_done < 0:
+        return -1
+    if last_done >= len(queue_lines):
+        print(f"[INFO] queue.txt 縮小検出（checkpoint={last_done}, queue={len(queue_lines)}件）→ 先頭から再開")
+        return -1
+    if _prefix_hash(queue_lines, last_done) != saved_hash:
+        print(f"[INFO] queue.txt 内容変更検出 → 先頭から再開")
+        return -1
+    return last_done
+
+
+def save_checkpoint(index: int, queue_lines: list):
     tmp = CHECKPOINT_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps({"last_done": index}))
+    data = {"last_done": index, "prefix_hash": _prefix_hash(queue_lines, index)}
+    tmp.write_text(json.dumps(data), encoding="utf-8")
     shutil.move(str(tmp), str(CHECKPOINT_FILE))
 
 
@@ -223,7 +239,7 @@ def main():
     cfg = load_config()
     queue = load_queue()
     queue_hash = hashlib.md5(QUEUE_FILE.read_bytes()).hexdigest()
-    last_done = load_checkpoint()
+    last_done = load_checkpoint(queue)
     start_from = last_done + 1
 
     total = len(queue)
@@ -245,7 +261,7 @@ def main():
 
         result = generate(payload, i, timeout=cfg.get("per_image_timeout", 600))
         if result:
-            save_checkpoint(i)
+            save_checkpoint(i, queue)
             print(f"  [{i}] ✅ 完了 (checkpoint 保存)")
 
             outpath = parsed.get("outpath_samples", "")
