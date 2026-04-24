@@ -111,7 +111,8 @@ try:
     req = urllib.request.Request(
         'https://api.paperspace.com/v1/notebooks',
         headers={'Authorization': 'Bearer ' + api_key, 'Content-Type': 'application/json'})
-    data = json.load(urllib.request.urlopen(req, timeout=15))
+    raw = json.load(urllib.request.urlopen(req, timeout=15))
+    data = raw.get('items', raw) if isinstance(raw, dict) else raw
     if repo_id:
         for n in data:
             if n.get('notebookRepoId') == repo_id:
