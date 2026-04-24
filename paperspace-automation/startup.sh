@@ -27,7 +27,9 @@ if [ -f "$ENV_FILE" ]; then
     NOTION_URL_PAGE_ID=$(grep -E '^NOTION_URL_PAGE_ID=' "$ENV_FILE" | cut -d= -f2- | tr -d '\r')
     GRAVITY_SECRET=$(grep -E '^GRAVITY_SECRET=' "$ENV_FILE" | cut -d= -f2- | tr -d '\r')
     GITHUB_TOKEN=$(grep -E '^GITHUB_TOKEN=' "$ENV_FILE" | cut -d= -f2- | tr -d '\r')
+    GDRIVE_ROOT_FOLDER_ID=$(grep -E '^GDRIVE_ROOT_FOLDER_ID=' "$ENV_FILE" | cut -d= -f2- | tr -d '\r')
     export GRAVITY_SECRET
+    export GDRIVE_ROOT_FOLDER_ID
     echo "✅ .env 読み込み完了 ($ENV_FILE)"
 else
     echo "INFO: $ENV_FILE なし — Notion 通知なしで起動"
@@ -45,6 +47,12 @@ if [ -n "${GITHUB_TOKEN:-}" ] && [ -z "${_STARTUP_UPDATED:-}" ]; then
             && mv "$STORAGE/${_f}.new" "$STORAGE/${_f}" \
             || rm -f "$STORAGE/${_f}.new"
     done
+    # gdrive_uploader は workflow-gravity 配下から取得
+    _wg_repo="https://api.github.com/repos/AIBI0131/Antigravity/contents/workflow-gravity"
+    curl -fsS "${_hdr[@]}" "${_wg_repo}/gdrive_uploader.py?ref=master" -o "$STORAGE/gdrive_uploader.py.new" --max-time 30 \
+        && [ -s "$STORAGE/gdrive_uploader.py.new" ] \
+        && mv "$STORAGE/gdrive_uploader.py.new" "$STORAGE/gdrive_uploader.py" \
+        || rm -f "$STORAGE/gdrive_uploader.py.new"
     chmod +x "$STORAGE/startup.sh"
     echo "✅ GitHub から最新スクリプト取得完了"
     export _STARTUP_UPDATED=1
