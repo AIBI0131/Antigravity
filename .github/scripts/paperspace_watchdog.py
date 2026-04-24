@@ -356,10 +356,22 @@ def main():
                 _trigger_startup(handle, token, fqdn)
         sys.exit(0)
 
+    # ── running → startup.sh をトリガー（冪等: flock で二重実行防止済み）────────
+    nb = notebook_info()
+    handle = nb.get("name", "")
+    token = nb.get("token", "")
+    fqdn = nb.get("fqdn", "")
+    if handle and token:
+        print("→ Notebook は Running。startup.sh をトリガーします（冪等）。")
+        if not DRY_RUN:
+            _trigger_startup(handle, token, fqdn)
+    else:
+        print("→ Notebook は Running だが handle/token 不明。トリガーをスキップ。")
+
     # ── running だが URL が古い場合は stop → start ───────────────────────────
     age = read_sd_url_age()
     if age is None:
-        print("→ Notebook は Running。GDRIVE 未設定のため URL 鮮度チェックをスキップ。正常終了。")
+        print("→ URL 鮮度チェック: GDRIVE 未設定のためスキップ。正常終了。")
         sys.exit(0)
 
     if age > STALE_THRESHOLD:
