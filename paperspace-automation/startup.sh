@@ -145,10 +145,10 @@ stop_notebook() {
         echo "[auto-stop] 全件完了 — Notebook を自動停止します (id=$notebook_id) ($(date))"
         local result
         result=$(curl -sS -X POST \
-            "https://api.paperspace.com/v1/notebooks/${notebook_id}/stop" \
-            -H "Authorization: Bearer ${api_key}" \
+            "https://api.paperspace.io/notebooks/v2/stopNotebook" \
+            -H "x-api-key: ${api_key}" \
             -H "Content-Type: application/json" \
-            -d '{}' \
+            -d "{\"notebookId\": \"${notebook_id}\"}" \
             --max-time 30)
         echo "[auto-stop] 結果: $result"
     else
