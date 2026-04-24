@@ -99,29 +99,58 @@ queue_is_done() {
     [ "$saved" = "$current" ]
 }
 
+# ── helper: 自分の Notebook ID を API から自動取得 ────────────────────────────
+_resolve_my_notebook_id() {
+    local api_key="$1"
+    local repo_id="${PAPERSPACE_NOTEBOOK_REPO_ID:-}"
+    _STOP_API_KEY="$api_key" _STOP_REPO_ID="$repo_id" python3 -c "
+import json, os, sys, urllib.request
+api_key = os.environ['_STOP_API_KEY']
+repo_id = os.environ.get('_STOP_REPO_ID', '')
+try:
+    req = urllib.request.Request(
+        'https://api.paperspace.com/v1/notebooks',
+        headers={'Authorization': 'Bearer ' + api_key, 'Content-Type': 'application/json'})
+    data = json.load(urllib.request.urlopen(req, timeout=15))
+    if repo_id:
+        for n in data:
+            if n.get('notebookRepoId') == repo_id:
+                print(n['id']); sys.exit(0)
+    for n in data:
+        if n.get('state') == 'Running':
+            print(n['id']); sys.exit(0)
+except Exception:
+    pass
+" 2>/dev/null
+}
+
 # ── helper: Notebook 自動停止 ─────────────────────────────────────────────────
 stop_notebook() {
+    local api_key notebook_id
+    api_key=$(grep -E '^PAPERSPACE_API_KEY=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '\r')
+    notebook_id=$(_resolve_my_notebook_id "$api_key")
+    if [ -z "$notebook_id" ]; then
+        notebook_id=$(grep -E '^PAPERSPACE_NOTEBOOK_ID=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '\r')
+        echo "[auto-stop] API 自動取得失敗 — .env フォールバック: $notebook_id"
+    fi
+
     echo "[auto-stop] プロセス掃除中..."
     pkill -f 'launch.py'       2>/dev/null || true
     pkill -f 'auto_gen_worker' 2>/dev/null || true
     pkill -f 'cloudflared'     2>/dev/null || true
     sleep 3
 
-    local api_key notebook_id
-    api_key=$(grep -E '^PAPERSPACE_API_KEY=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '\r')
-    notebook_id=$(grep -E '^PAPERSPACE_NOTEBOOK_ID=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '\r')
     if [ -n "$api_key" ] && [ -n "$notebook_id" ]; then
-        echo "[auto-stop] 全件完了 — Notebook を自動停止します ($(date))"
+        echo "[auto-stop] 全件完了 — Notebook を自動停止します (id=$notebook_id) ($(date))"
         local result
         result=$(curl -sS -X POST \
-            "https://api.paperspace.io/notebooks/v2/stopNotebook" \
-            -H "x-api-key: ${api_key}" \
+            "https://api.paperspace.com/v1/notebooks/${notebook_id}/stop" \
+            -H "Authorization: Bearer ${api_key}" \
             -H "Content-Type: application/json" \
-            -d "{\"notebookId\": \"${notebook_id}\"}" \
             --max-time 30)
         echo "[auto-stop] 結果: $result"
     else
-        echo "[auto-stop] WARN: PAPERSPACE_API_KEY / PAPERSPACE_NOTEBOOK_ID 未設定 — 自動停止できません"
+        echo "[auto-stop] WARN: PAPERSPACE_API_KEY 未設定 — 自動停止できません"
     fi
 }
 
