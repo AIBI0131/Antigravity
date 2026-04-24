@@ -5,31 +5,9 @@ set -uo pipefail
 exec > >(tee -a /notebooks/startup.log) 2>&1
 exec 200>/tmp/startup.lock
 if ! flock -n 200; then
-    echo "INFO: startup.sh already running — queue 同期のみ実行 ($(date))"
-    # 既に実行中でも queue.txt の同期と DONE リセットだけ行う
-    STORAGE=/storage/paperspace-automation
-    ENV_FILE="$STORAGE/.env"
-    GITHUB_TOKEN=$(grep -E '^GITHUB_TOKEN=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '\r')
-    if [ -n "${GITHUB_TOKEN:-}" ]; then
-        _http=$(curl -sS -o "$STORAGE/queue.txt.tmp" -w '%{http_code}' \
-            -H "Authorization: token ${GITHUB_TOKEN}" \
-            -H "Accept: application/vnd.github.v3.raw" \
-            "https://api.github.com/repos/AIBI0131/Antigravity/contents/paperspace-automation/queue.txt?ref=master" \
-            --max-time 30)
-        if [ "$_http" = "200" ] && [ -s "$STORAGE/queue.txt.tmp" ]; then
-            if ! cmp -s "$STORAGE/queue.txt.tmp" "$STORAGE/queue.txt"; then
-                mv "$STORAGE/queue.txt.tmp" "$STORAGE/queue.txt"
-                rm -f "$STORAGE/DONE"
-                echo "INFO: queue.txt 更新検出 → DONE リセット済み"
-            else
-                rm -f "$STORAGE/queue.txt.tmp"
-                echo "INFO: queue.txt 変更なし"
-            fi
-        else
-            rm -f "$STORAGE/queue.txt.tmp"
-            echo "WARN: queue.txt 取得失敗 (HTTP $_http)"
-        fi
-    fi
+    echo "INFO: startup.sh already running — queue 即時同期リクエスト ($(date))"
+    touch /tmp/queue_sync_now
+    rm -f /storage/paperspace-automation/DONE
     exit 0
 fi
 echo "===== startup.sh begin: $(date) ====="
@@ -369,7 +347,12 @@ if [ -n "${GITHUB_TOKEN:-}" ]; then
   _qurl="https://api.github.com/repos/AIBI0131/Antigravity/contents/paperspace-automation/queue.txt?ref=master"
   _qhdr=(-H "Authorization: token ${GITHUB_TOKEN}" -H "Accept: application/vnd.github.v3.raw")
   while true; do
-    sleep 60
+    if [ -f /tmp/queue_sync_now ]; then
+        rm -f /tmp/queue_sync_now
+        echo "[queue-sync] 即時同期リクエスト検出 ($(date))"
+    else
+        sleep 60
+    fi
     curl -fsS "${_qhdr[@]}" "$_qurl" -o "$QUEUE_TXT.sync" --max-time 30 \
         && [ -s "$QUEUE_TXT.sync" ] \
         && ! cmp -s "$QUEUE_TXT.sync" "$QUEUE_TXT" \

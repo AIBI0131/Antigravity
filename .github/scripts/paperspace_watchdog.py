@@ -332,7 +332,8 @@ def main():
     resolve_notebook_id()
 
     # ── state チェック ───────────────────────────────────────────────────────
-    state = notebook_state()
+    nb = notebook_info()
+    state = nb.get("state", nb.get("status", "unknown"))
     print(f"Notebook state: {state}")
 
     # 遷移中は何もしない（二重 stop/start 防止）
@@ -357,7 +358,6 @@ def main():
         sys.exit(0)
 
     # ── running → startup.sh をトリガー（冪等: flock で二重実行防止済み）────────
-    nb = notebook_info()
     handle = nb.get("name", "")
     token = nb.get("token", "")
     fqdn = nb.get("fqdn", "")
