@@ -147,6 +147,7 @@ stop_notebook() {
             "https://api.paperspace.com/v1/notebooks/${notebook_id}/stop" \
             -H "Authorization: Bearer ${api_key}" \
             -H "Content-Type: application/json" \
+            -d '{}' \
             --max-time 30)
         echo "[auto-stop] 結果: $result"
     else
