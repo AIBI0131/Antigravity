@@ -136,6 +136,10 @@ stop_notebook() {
         echo "[auto-stop] API 自動取得失敗 — .env フォールバック: $notebook_id"
     fi
 
+    cp /notebooks/startup.log "$STORAGE/last_startup.log" 2>/dev/null || true
+    cp /notebooks/worker.log "$STORAGE/last_worker.log" 2>/dev/null || true
+    echo "[auto-stop] ログを /storage/ に退避完了"
+
     echo "[auto-stop] プロセス掃除中..."
     pkill -f 'launch.py'       2>/dev/null || true
     pkill -f 'auto_gen_worker' 2>/dev/null || true
