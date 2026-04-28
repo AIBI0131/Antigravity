@@ -1,0 +1,23 @@
+{
+    "limb_check": {
+        "enabled": true,
+        "interval": 1.0
+    },
+    "upscale": {
+        "enabled": true,
+        "upscaler_1": "R-ESRGAN 4x+ Anime6B",
+        "upscaling_resize": 2
+    },
+    "mosaic": {
+        "enabled": true,
+        "detector": "onnx_custom",
+        "custom_model_path": "/storage/paperspace-automation/fixed_model.onnx",
+        "confidence_threshold": 0.45,
+        "mosaic_kind": "Block",
+        "pixel_block_size": 7,
+        "is_fanza": true,
+        "target_labels": ["MALE_GENITALIA_EXPOSED", "FEMALE_GENITALIA_EXPOSED"],
+        "save_fill_image": false,
+        "is_save_no_mosaic_folder": false
+    }
+}

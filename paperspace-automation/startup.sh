@@ -58,6 +58,21 @@ if [ -n "${GITHUB_TOKEN:-}" ] && [ -z "${_STARTUP_UPDATED:-}" ]; then
         && [ -s "$STORAGE/gdrive_uploader.py.new" ] \
         && mv "$STORAGE/gdrive_uploader.py.new" "$STORAGE/gdrive_uploader.py" \
         || rm -f "$STORAGE/gdrive_uploader.py.new"
+    # 後処理モジュール (workflow-gravity/modules)
+    _wg_modules="https://api.github.com/repos/AIBI0131/Antigravity/contents/workflow-gravity/modules"
+    for _mod in vision_limb_checker.py auto_mosaic.py; do
+        curl -fsS "${_hdr[@]}" "${_wg_modules}/${_mod}?ref=master" -o "$STORAGE/${_mod}.new" --max-time 30 \
+            && [ -s "$STORAGE/${_mod}.new" ] \
+            && mv "$STORAGE/${_mod}.new" "$STORAGE/${_mod}" \
+            || rm -f "$STORAGE/${_mod}.new"
+    done
+    # 後処理ワーカー・設定 (paperspace-automation)
+    for _f in postprocess_worker.py postprocess_config.json; do
+        curl -fsS "${_hdr[@]}" "${_repo}/${_f}?ref=master" -o "$STORAGE/${_f}.new" --max-time 30 \
+            && [ -s "$STORAGE/${_f}.new" ] \
+            && mv "$STORAGE/${_f}.new" "$STORAGE/${_f}" \
+            || rm -f "$STORAGE/${_f}.new"
+    done
     chmod +x "$STORAGE/startup.sh"
     echo "✅ GitHub から最新スクリプト取得完了"
     export _STARTUP_UPDATED=1
@@ -207,6 +222,7 @@ if [ ! -f "$READY" ]; then
         google-api-python-client google-auth
     "$VENV/bin/pip" install --no-build-isolation \
         "https://github.com/openai/CLIP/archive/d50d76daa670286dd6cacf3bcd80b5e4823fc8e1.zip"
+    "$VENV/bin/pip" install opencv-python-headless openai onnxruntime tqdm 2>&1 | tail -5
     echo "built_at=$(date +%s)" > "$READY"
     echo "✅ venv 構築完了"
 fi

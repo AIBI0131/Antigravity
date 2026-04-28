@@ -30,6 +30,12 @@ except ImportError:
     _gdrive_uploader = None
     _GDRIVE_ENABLED = False
 
+try:
+    from postprocess_worker import PostProcessConsumer, PostProcessItem
+    _POSTPROCESS_AVAILABLE = True
+except ImportError:
+    _POSTPROCESS_AVAILABLE = False
+
 WEBUI_API = "http://127.0.0.1:7860"
 STORAGE = Path("/storage/paperspace-automation")
 QUEUE_FILE = STORAGE / "queue.txt"
@@ -37,6 +43,7 @@ CHECKPOINT_FILE = STORAGE / "checkpoint.json"
 CONFIG_FILE = Path("/notebooks/queue_config.json")
 WEBUI_ROOT = Path("/notebooks/stable-diffusion-webui")
 DONE_FLAG = STORAGE / "DONE"
+POSTPROCESS_CONFIG = STORAGE / "postprocess_config.json"
 
 DEFAULT_CONFIG = {
     "steps": 28,
@@ -251,12 +258,31 @@ def _wait_for_queue_update(current_hash: str) -> bool:
     return False
 
 
+def _drain_consumer(pp_consumer):
+    if pp_consumer:
+        pp_consumer.finish()
+        pp_consumer.wait()
+        print(f"後処理統計: {pp_consumer.stats}")
+
+
 def main():
     print("=== auto_gen_worker 起動 ===")
     wait_webui()
     cfg = load_config()
 
+    _pp_available = _POSTPROCESS_AVAILABLE and POSTPROCESS_CONFIG.exists()
+
     while True:
+        pp_consumer = None
+        if _pp_available:
+            try:
+                pp_consumer = PostProcessConsumer(POSTPROCESS_CONFIG, sd_url=WEBUI_API)
+                pp_consumer.start()
+                print("✅ 後処理パイプライン起動")
+            except Exception as e:
+                print(f"[WARN] 後処理初期化失敗（raw のみ）: {e}")
+                pp_consumer = None
+
         queue = load_queue()
         queue_hash = hashlib.md5(QUEUE_FILE.read_bytes()).hexdigest()
         last_done = load_checkpoint(queue)
@@ -267,6 +293,7 @@ def main():
         print(f"全 {total} 件 / 開始: {start_from} 番目（残り {remaining} 件）")
 
         if start_from >= total:
+            _drain_consumer(pp_consumer)
             print("全プロンプト処理済み。queue.txt の更新を待機中...")
             if _wait_for_queue_update(queue_hash):
                 continue
@@ -288,22 +315,25 @@ def main():
                 print(f"  [{i}] ✅ 完了 (checkpoint 保存)")
 
                 outpath = parsed.get("outpath_samples", "")
-                if _GDRIVE_ENABLED and _gdrive_uploader and outpath:
-                    images = result.get("images", [])
-                    if images:
-                        try:
-                            ok = _gdrive_uploader.upload_images_to_drive(
-                                images,
-                                outpath,
-                                filename_prefix=f"{i:05d}",
-                            )
-                            if ok:
-                                _cleanup_local(outpath)
-                        except Exception as e:
-                            print(f"  [{i}] [WARN] Drive アップロードエラー（ローカルに残存）: {e}")
+                images = result.get("images", [])
+                if _GDRIVE_ENABLED and _gdrive_uploader and outpath and images:
+                    try:
+                        ok = _gdrive_uploader.upload_images_to_drive(
+                            images,
+                            outpath,
+                            filename_prefix=f"{i:05d}",
+                        )
+                        if ok:
+                            _cleanup_local(outpath)
+                    except Exception as e:
+                        print(f"  [{i}] [WARN] Drive アップロードエラー（ローカルに残存）: {e}")
+
+                if pp_consumer and images and outpath:
+                    pp_consumer.enqueue(PostProcessItem(images, i, outpath))
             else:
                 print(f"  [{i}] ❌ 失敗 → スキップして続行")
 
+        _drain_consumer(pp_consumer)
         print("=== 現在のキュー完了 ===")
 
 
